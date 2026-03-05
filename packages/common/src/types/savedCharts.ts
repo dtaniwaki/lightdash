@@ -337,6 +337,7 @@ export type ColumnProperties = {
     displayStyle?: 'text' | 'bar';
     /** Color for bar display style (hex code) */
     color?: string;
+    width?: number;
 };
 
 export type TableChart = {
@@ -751,7 +752,10 @@ export type ChartConfig =
 
 export type SavedChartType = ChartType;
 
-export type SavedChartDAO = Omit<SavedChart, 'isPrivate' | 'access'>;
+export type SavedChartDAO = Omit<
+    SavedChart,
+    'isPrivate' | 'inheritsFromOrgOrProject' | 'access'
+>;
 
 export type SavedChart = {
     uuid: string;
@@ -790,6 +794,7 @@ export type SavedChart = {
     dashboardName: string | null;
     colorPalette: string[];
     isPrivate: boolean;
+    inheritsFromOrgOrProject: boolean;
     access: SpaceAccess[];
     /** Unique identifier slug for this chart */
     slug: string;
@@ -842,6 +847,7 @@ export type CreateSavedChartVersion = Omit<
     | 'dashboardName'
     | 'colorPalette'
     | 'isPrivate'
+    | 'inheritsFromOrgOrProject'
     | 'access'
     | 'slug'
 > &

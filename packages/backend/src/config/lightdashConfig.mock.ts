@@ -96,6 +96,7 @@ export const lightdashConfigMock: LightdashConfig = {
         enabled: false,
         port: 9090,
         path: '/metrics',
+        eventMetricsEnabled: false,
     },
     chart: { versionHistory: { daysLimit: 0 } },
     dashboard: {
@@ -154,6 +155,7 @@ export const lightdashConfigMock: LightdashConfig = {
     scheduler: {
         concurrency: 0,
         enabled: false,
+        pollInterval: 1000,
         jobTimeout: 0,
         tasks: ALL_TASK_NAMES,
         queryHistory: {
@@ -209,6 +211,7 @@ export const lightdashConfigMock: LightdashConfig = {
         timezone: undefined,
         useSqlPivotResults: false,
         showExecutionTime: false,
+        enableTableColumnCustomization: undefined,
     },
     ai: {
         copilot: {
@@ -341,5 +344,10 @@ export const lightdashConfigMock: LightdashConfig = {
     preAggregates: {
         enabled: false,
         debug: false,
+        s3: {
+            endpoint: 'mock_endpoint',
+            bucket: 'mock_preagg_bucket',
+            region: 'mock_region',
+        },
     },
 };

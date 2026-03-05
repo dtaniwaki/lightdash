@@ -9,6 +9,7 @@ import {
 } from './savedCharts';
 import type { SchedulerAndTargets } from './scheduler';
 import { type SpaceAccess } from './space';
+import { type DateGranularity } from './timeFrames';
 import { type UpdatedByUser } from './user';
 import { type ValidationSummary } from './validation';
 
@@ -165,11 +166,16 @@ export type DashboardTabWithUrls = DashboardTab & {
     selfUrl: string;
 };
 
-export type DashboardDAO = Omit<Dashboard, 'isPrivate' | 'access'>;
+export type DashboardDAO = Omit<
+    Dashboard,
+    'isPrivate' | 'inheritsFromOrgOrProject' | 'access'
+>;
 
 export type DashboardConfig = {
     isDateZoomDisabled: boolean;
     pinnedParameters?: string[];
+    dateZoomGranularities?: DateGranularity[];
+    defaultDateZoomGranularity?: DateGranularity;
 };
 
 export type Dashboard = {
@@ -193,6 +199,7 @@ export type Dashboard = {
     pinnedListOrder: number | null;
     tabs: DashboardTab[];
     isPrivate: boolean | null;
+    inheritsFromOrgOrProject: boolean;
     access: SpaceAccess[] | null;
     slug: string;
     config?: DashboardConfig;

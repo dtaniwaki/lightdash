@@ -1,4 +1,5 @@
 import { type WeekDay } from '../utils/timeFrames';
+import { type ProjectDefaults } from './lightdashProjectConfig';
 import { type ProjectGroupAccess } from './projectGroupAccess';
 
 export enum ProjectType {
@@ -261,6 +262,7 @@ export type CreateSnowflakeCredentials = {
     startOfWeek?: WeekDay | null;
     quotedIdentifiersIgnoreCase?: boolean;
     disableTimestampConversion?: boolean; // Disable timestamp conversion to UTC - only disable if all timestamp values are already in UTC
+    timeoutSeconds?: number;
     override?: boolean;
     organizationWarehouseCredentialsUuid?: string;
 };
@@ -561,6 +563,7 @@ export type Project = {
     createdByUserUuid: string | null;
     organizationWarehouseCredentialsUuid?: string;
     hasDefaultUserSpaces: boolean;
+    projectDefaults?: ProjectDefaults;
 };
 
 export type ProjectSummary = Pick<

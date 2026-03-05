@@ -5,6 +5,7 @@ import {
     ExploreError,
     ForbiddenError,
     NotFoundError,
+    ProjectType,
     SessionUser,
 } from '@lightdash/common';
 import { DeploySessionModel } from '../models/DeploySessionModel';
@@ -51,13 +52,16 @@ export class DeployService extends BaseService {
         user: SessionUser,
         projectUuid: string,
     ): Promise<{ deploySessionUuid: string }> {
-        // Check permissions - same as setExplores in original ProjectService
+        // Check deploy permission
         const project =
             await this.projectModel.getWithSensitiveFields(projectUuid);
+
+        // manage:DeployProject for non-preview projects (restrictable via custom roles)
+        // manage:DeployProject@self for preview projects created by the user
         if (
             user.ability.cannot(
-                'update',
-                subject('Project', {
+                'manage',
+                subject('DeployProject', {
                     projectUuid,
                     organizationUuid: project.organizationUuid,
                     type: project.type,
@@ -66,7 +70,7 @@ export class DeployService extends BaseService {
             )
         ) {
             throw new ForbiddenError(
-                `User does not have permission to update project`,
+                `User does not have permission to deploy to this project`,
             );
         }
 

@@ -570,6 +570,56 @@ export const parseResultsS3Config = (): LightdashConfig['results']['s3'] => {
     };
 };
 
+export const parsePreAggregateResultsS3Config = ():
+    | Omit<S3Config, 'expirationTime'>
+    | undefined => {
+    const baseS3Config = parseBaseS3Config();
+
+    if (!baseS3Config) {
+        return undefined;
+    }
+
+    const bucket = process.env.PRE_AGGREGATE_RESULTS_S3_BUCKET;
+    const region = process.env.PRE_AGGREGATE_RESULTS_S3_REGION;
+    const accessKey = process.env.PRE_AGGREGATE_RESULTS_S3_ACCESS_KEY;
+    const secretKey = process.env.PRE_AGGREGATE_RESULTS_S3_SECRET_KEY;
+
+    const hasAnyPreAggregateS3Config =
+        bucket !== undefined ||
+        region !== undefined ||
+        accessKey !== undefined ||
+        secretKey !== undefined;
+
+    if (!hasAnyPreAggregateS3Config) {
+        return undefined;
+    }
+
+    const {
+        endpoint,
+        forcePathStyle,
+        useCredentialsFrom,
+        accessKey: baseAccessKey,
+        secretKey: baseSecretKey,
+    } = baseS3Config;
+
+    if (!endpoint || !bucket || !region) {
+        throw new ParseError(
+            'PRE_AGGREGATE_RESULTS_S3_BUCKET, PRE_AGGREGATE_RESULTS_S3_REGION, and S3_ENDPOINT must be set when configuring pre-aggregate result storage.',
+            {},
+        );
+    }
+
+    return {
+        endpoint,
+        forcePathStyle,
+        bucket,
+        region,
+        accessKey: accessKey || baseAccessKey,
+        secretKey: secretKey || baseSecretKey,
+        useCredentialsFrom,
+    };
+};
+
 const validateTaskList = (tasks: string[], envVarName: string) => {
     const validTasks: SchedulerTaskName[] = [];
     const invalidTasks: string[] = [];
@@ -825,6 +875,8 @@ export type LightdashConfig = {
         gcDurationBuckets?: number[];
         eventLoopMonitoringPrecision?: number;
         labels?: Object;
+        eventMetricsEnabled: boolean;
+        eventMetricsConfigPath?: string;
     };
     database: {
         connectionUri: string | undefined;
@@ -841,6 +893,7 @@ export type LightdashConfig = {
         maxPageSize: number;
         useSqlPivotResults: boolean | undefined;
         showExecutionTime: boolean | undefined;
+        enableTableColumnCustomization: boolean | undefined;
     };
     pivotTable: {
         maxColumnLimit: number;
@@ -875,6 +928,7 @@ export type LightdashConfig = {
     scheduler: {
         enabled: boolean;
         concurrency: number;
+        pollInterval: number;
         jobTimeout: number;
         screenshotTimeout?: number;
         tasks: Array<SchedulerTaskName>;
@@ -1063,6 +1117,7 @@ export type LightdashConfig = {
     preAggregates: {
         enabled: boolean;
         debug: boolean;
+        s3?: Omit<S3Config, 'expirationTime'>;
     };
 };
 
@@ -1332,6 +1387,13 @@ export const parseConfig = (): LightdashConfig => {
     }
 
     const licenseKey = process.env.LIGHTDASH_LICENSE_KEY || null;
+    const preAggregatesEnabled =
+        licenseKey !== null && process.env.PRE_AGGREGATES_ENABLED === 'true';
+    const preAggregatesS3 = parsePreAggregateResultsS3Config();
+
+    if (preAggregatesEnabled && !preAggregatesS3) {
+        throw new ParseError('Pre-aggregates require S3 configuration', {});
+    }
 
     return {
         mode,
@@ -1595,6 +1657,12 @@ export const parseConfig = (): LightdashConfig => {
             labels: getObjectFromEnvironmentVariable(
                 'LIGHTDASH_PROMETHEUS_LABELS',
             ),
+            eventMetricsEnabled:
+                process.env.LIGHTDASH_PROMETHEUS_EVENT_METRICS_ENABLED ===
+                'true', // defaults to false
+            eventMetricsConfigPath:
+                process.env.LIGHTDASH_CUSTOM_METRICS_CONFIG_PATH ||
+                process.env.CUSTOM_METRICS_CONFIG_PATH,
         },
         allowMultiOrgs: process.env.ALLOW_MULTIPLE_ORGS === 'true',
         maxPayloadSize: process.env.LIGHTDASH_MAX_PAYLOAD || '5mb',
@@ -1621,6 +1689,10 @@ export const parseConfig = (): LightdashConfig => {
                 : undefined,
             showExecutionTime: process.env.SHOW_EXECUTION_TIME
                 ? process.env.SHOW_EXECUTION_TIME === 'true'
+                : undefined,
+            enableTableColumnCustomization: process.env
+                .ENABLE_TABLE_COLUMN_CUSTOMIZATION
+                ? process.env.ENABLE_TABLE_COLUMN_CUSTOMIZATION === 'true'
                 : undefined,
         },
         chart: {
@@ -1700,6 +1772,9 @@ export const parseConfig = (): LightdashConfig => {
         scheduler: {
             enabled: process.env.SCHEDULER_ENABLED !== 'false',
             concurrency: parseInt(process.env.SCHEDULER_CONCURRENCY || '3', 10),
+            pollInterval:
+                getIntegerFromEnvironmentVariable('SCHEDULER_POLL_INTERVAL') ||
+                1000,
             jobTimeout: process.env.SCHEDULER_JOB_TIMEOUT
                 ? parseInt(process.env.SCHEDULER_JOB_TIMEOUT, 10)
                 : DEFAULT_JOB_TIMEOUT,
@@ -1930,12 +2005,11 @@ export const parseConfig = (): LightdashConfig => {
                 ) ?? 30,
         },
         preAggregates: {
-            enabled:
-                licenseKey !== null &&
-                process.env.PRE_AGGREGATES_ENABLED === 'true',
+            enabled: preAggregatesEnabled,
             debug:
                 licenseKey !== null &&
                 process.env.DEBUG_PRE_AGGREGATES === 'true',
+            s3: preAggregatesS3,
         },
     };
 };

@@ -3,7 +3,7 @@ import { LightdashAnalytics } from '../analytics/LightdashAnalytics';
 import { ClientRepository } from '../clients/ClientRepository';
 import { LightdashConfig } from '../config/parseConfig';
 import { ModelRepository } from '../models/ModelRepository';
-import PrometheusMetrics from '../prometheus';
+import PrometheusMetrics from '../prometheus/PrometheusMetrics';
 import type { UtilRepository } from '../utils/UtilRepository';
 import { AdminNotificationService } from './AdminNotificationService/AdminNotificationService';
 import { AnalyticsService } from './AnalyticsService/AnalyticsService';
@@ -546,6 +546,7 @@ export class ServiceRepository
             'preAggregateMaterializationService',
             () =>
                 new PreAggregateMaterializationService({
+                    lightdashConfig: this.context.lightdashConfig,
                     preAggregateModel: this.models.getPreAggregateModel(),
                     queryHistoryModel: this.models.getQueryHistoryModel(),
                     asyncQueryService: this.getAsyncQueryService(),
@@ -685,6 +686,8 @@ export class ServiceRepository
                     savedSqlModel: this.models.getSavedSqlModel(),
                     resultsStorageClient:
                         this.clients.getResultsFileStorageClient(),
+                    preAggregateResultsStorageClient:
+                        this.clients.getPreAggregateResultsFileStorageClient(),
                     featureFlagModel: this.models.getFeatureFlagModel(),
                     projectParametersModel:
                         this.models.getProjectParametersModel(),

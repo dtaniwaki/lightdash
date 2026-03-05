@@ -11,7 +11,10 @@ import { SpaceMemberRole } from '../types/space';
 /** Context can have either/or organizationUuid or projectUuid. Applies the one we have. */
 const addUuidCondition = (
     context: ScopeContext,
-    modifiers?: { isPrivate: false } | { userUuid: string | boolean },
+    modifiers?:
+        | { inheritsFromOrgOrProject: true }
+        | { isPrivate: false }
+        | { userUuid: string | boolean },
 ) => {
     const projectOrOrg = context.organizationUuid
         ? { organizationUuid: context.organizationUuid }
@@ -44,7 +47,9 @@ const scopes: Scope[] = [
         isEnterprise: false,
         group: ScopeGroup.CONTENT,
         getConditions: (context) => [
+            // TODO: remove once we're confident that nobody is stuck on an old frontend version
             addUuidCondition(context, { isPrivate: false }),
+            addUuidCondition(context, { inheritsFromOrgOrProject: true }),
             addAccessCondition(context),
         ],
     },
@@ -72,7 +77,9 @@ const scopes: Scope[] = [
         isEnterprise: false,
         group: ScopeGroup.CONTENT,
         getConditions: (context) => [
+            // TODO: remove once we're confident that nobody is stuck on an old frontend version
             addUuidCondition(context, { isPrivate: false }),
+            addUuidCondition(context, { inheritsFromOrgOrProject: true }),
             addAccessCondition(context),
         ],
     },
@@ -100,7 +107,9 @@ const scopes: Scope[] = [
         isEnterprise: false,
         group: ScopeGroup.CONTENT,
         getConditions: (context) => [
+            // TODO: remove once we're confident that nobody is stuck on an old frontend version
             addUuidCondition(context, { isPrivate: false }),
+            addUuidCondition(context, { inheritsFromOrgOrProject: true }),
             addAccessCondition(context),
         ],
     },
@@ -124,7 +133,9 @@ const scopes: Scope[] = [
         isEnterprise: false,
         group: ScopeGroup.CONTENT,
         getConditions: (context) => [
+            // TODO: remove once we're confident that nobody is stuck on an old frontend version
             addUuidCondition(context, { isPrivate: false }),
+            addUuidCondition(context, { inheritsFromOrgOrProject: true }),
         ],
     },
     {
@@ -301,6 +312,26 @@ const scopes: Scope[] = [
         isEnterprise: false,
         group: ScopeGroup.PROJECT_MANAGEMENT,
         getConditions: addDefaultUuidCondition,
+    },
+    {
+        name: 'manage:DeployProject',
+        description: 'Deploy dbt projects via CLI',
+        isEnterprise: false,
+        group: ScopeGroup.PROJECT_MANAGEMENT,
+        getConditions: addDefaultUuidCondition,
+    },
+    {
+        name: 'manage:DeployProject@self',
+        description: 'Deploy to preview projects created by the user',
+        isEnterprise: false,
+        group: ScopeGroup.PROJECT_MANAGEMENT,
+        getConditions: (context) => [
+            {
+                projectUuid: context.projectUuid,
+                createdByUserUuid: context.userUuid || false,
+                type: ProjectType.PREVIEW,
+            },
+        ],
     },
     {
         name: 'manage:Validation',

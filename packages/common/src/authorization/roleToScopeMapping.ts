@@ -73,6 +73,8 @@ const BASE_ROLE_SCOPES = {
         'manage:SqlRunner',
         'manage:Validation',
         'manage:CompileProject',
+        'manage:DeployProject',
+        'manage:DeployProject@self',
         'create:Project@preview', // Preview projects
         'delete:Project@self', // Preview projects created by user
         'update:Project',

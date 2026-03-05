@@ -1461,23 +1461,41 @@ export const EXPECTED_SQL_WITH_CUSTOM_DIMENSION_BIN_NUMBER = `WITH age_range_cte
                                                                                      age_range_cte.max_id)
                                                                          END
                                                                                                  AS \`age_range\`,
+                                                                     CASE
+                                                                         WHEN "table1".dim1 IS NULL THEN 3
+                                                                         WHEN "table1".dim1 >= age_range_cte.min_id +
+                                                                                               age_range_cte.bin_width *
+                                                                                               0 AND "table1".dim1 <
+                                                                                                     age_range_cte.min_id +
+                                                                                                     age_range_cte.bin_width *
+                                                                                                     1 THEN 0
+                                                                         WHEN "table1".dim1 >= age_range_cte.min_id +
+                                                                                               age_range_cte.bin_width *
+                                                                                               1 AND "table1".dim1 <
+                                                                                                     age_range_cte.min_id +
+                                                                                                     age_range_cte.bin_width *
+                                                                                                     2 THEN 1
+                                                                         ELSE 2
+                                                                         END
+                                                                                                 AS \`age_range_order\`,
                                                                      MAX("table1".number_column) AS \`table1_metric1\`
                                                               FROM "db"."schema"."table1" AS \`table1\`
 
                                                                        CROSS JOIN age_range_cte
 
-                                                              GROUP BY 1,2
+                                                              GROUP BY 1,2,3
                                                               ORDER BY \`table1_metric1\` DESC LIMIT 10`;
 
 export const EXPECTED_SQL_WITH_CUSTOM_DIMENSION_BIN_WIDTH = `SELECT "table1".dim1               AS \`table1_dim1\`,
                                                                     CONCAT(FLOOR("table1".dim1 / 10) * 10, ' - ',
                                                                            (FLOOR("table1".dim1 / 10) + 1) * 10 -
                                                                            1)                   AS \`age_range\`,
+                                                                    FLOOR("table1".dim1 / 10) * 10 AS \`age_range_order\`,
                                                                     MAX("table1".number_column) AS \`table1_metric1\`
                                                              FROM "db"."schema"."table1" AS \`table1\`
 
 
-                                                             GROUP BY 1,2
+                                                             GROUP BY 1,2,3
                                                              ORDER BY \`table1_metric1\` DESC LIMIT 10`;
 
 export const EXPECTED_SQL_WITH_CUSTOM_DIMENSION_AND_TABLE_CALCULATION = `WITH age_range_cte
@@ -1530,12 +1548,36 @@ export const EXPECTED_SQL_WITH_CUSTOM_DIMENSION_AND_TABLE_CALCULATION = `WITH ag
                                                                                                          age_range_cte.max_id)
                                                                                                  END
                                                                                                                          AS \`age_range\`,
+                                                                                             CASE
+                                                                                                 WHEN "table1".dim1 IS NULL
+                                                                                                     THEN 3
+                                                                                                 WHEN "table1".dim1 >=
+                                                                                                      age_range_cte.min_id +
+                                                                                                      age_range_cte.bin_width *
+                                                                                                      0 AND
+                                                                                                      "table1".dim1 <
+                                                                                                      age_range_cte.min_id +
+                                                                                                      age_range_cte.bin_width *
+                                                                                                      1
+                                                                                                     THEN 0
+                                                                                                 WHEN "table1".dim1 >=
+                                                                                                      age_range_cte.min_id +
+                                                                                                      age_range_cte.bin_width *
+                                                                                                      1 AND
+                                                                                                      "table1".dim1 <
+                                                                                                      age_range_cte.min_id +
+                                                                                                      age_range_cte.bin_width *
+                                                                                                      2
+                                                                                                     THEN 1
+                                                                                                 ELSE 2
+                                                                                                 END
+                                                                                                                         AS \`age_range_order\`,
                                                                                              MAX("table1".number_column) AS \`table1_metric1\`
                                                                                       FROM "db"."schema"."table1" AS \`table1\`
 
                                                                                                CROSS JOIN age_range_cte
 
-                                                                                      GROUP BY 1,2
+                                                                                      GROUP BY 1,2,3
                                                                                       )
                                                                          SELECT *,
                                                                                 table1_dim1 + 1 AS \`calc3\`
@@ -1606,11 +1648,12 @@ export const EXPECTED_SQL_WITH_CUSTOM_DIMENSION_BIN_WIDTH_ON_POSTGRES = `SELECT 
                                                                                  10 || ' - ' ||
                                                                                  (FLOOR("table1".dim1 / 10) + 1) * 10 -
                                                                                  1)                         AS "age_range",
+                                                                                FLOOR("table1".dim1 / 10) * 10 AS "age_range_order",
                                                                                 MAX("table1".number_column) AS "table1_metric1"
                                                                          FROM "db"."schema"."table1" AS "table1"
 
 
-                                                                         GROUP BY 1,2
+                                                                         GROUP BY 1,2,3
                                                                          ORDER BY "table1_metric1" DESC LIMIT 10`;
 
 export const INTRINSIC_USER_ATTRIBUTES: IntrinsicUserAttributes = {
@@ -2289,6 +2332,108 @@ export const METRIC_QUERY_WITH_CUSTOM_USER_ATTRIBUTE_FILTER_VALUE_SQL = `SELECT 
                                                  ))
                                              GROUP BY 1
                                              ORDER BY "table1_dim1" DESC LIMIT 10`;
+
+// --- sum_distinct fixtures ---
+
+export const EXPLORE_WITH_SUM_DISTINCT: Explore = {
+    targetDatabase: SupportedDbtAdapter.POSTGRES,
+    name: 'orders',
+    label: 'orders',
+    baseTable: 'orders',
+    tags: [],
+    joinedTables: [],
+    tables: {
+        orders: {
+            name: 'orders',
+            label: 'orders',
+            database: 'db',
+            schema: 'schema',
+            sqlTable: '"db"."schema"."orders"',
+            primaryKey: ['order_id'],
+            dimensions: {
+                order_id: {
+                    type: DimensionType.STRING,
+                    name: 'order_id',
+                    label: 'Order ID',
+                    table: 'orders',
+                    tableLabel: 'orders',
+                    fieldType: FieldType.DIMENSION,
+                    sql: '${TABLE}.order_id',
+                    compiledSql: '"orders".order_id',
+                    tablesReferences: ['orders'],
+                    hidden: false,
+                },
+                payment_method: {
+                    type: DimensionType.STRING,
+                    name: 'payment_method',
+                    label: 'Payment Method',
+                    table: 'orders',
+                    tableLabel: 'orders',
+                    fieldType: FieldType.DIMENSION,
+                    sql: '${TABLE}.payment_method',
+                    compiledSql: '"orders".payment_method',
+                    tablesReferences: ['orders'],
+                    hidden: false,
+                },
+                status: {
+                    type: DimensionType.STRING,
+                    name: 'status',
+                    label: 'Status',
+                    table: 'orders',
+                    tableLabel: 'orders',
+                    fieldType: FieldType.DIMENSION,
+                    sql: '${TABLE}.status',
+                    compiledSql: '"orders".status',
+                    tablesReferences: ['orders'],
+                    hidden: false,
+                },
+            },
+            metrics: {
+                total_revenue: {
+                    type: MetricType.SUM_DISTINCT,
+                    fieldType: FieldType.METRIC,
+                    table: 'orders',
+                    tableLabel: 'orders',
+                    name: 'total_revenue',
+                    label: 'Total Revenue',
+                    sql: '${TABLE}.amount',
+                    compiledSql: 'SUM("orders".amount)',
+                    compiledValueSql: '"orders".amount',
+                    compiledDistinctKeys: ['"orders".line_item_id'],
+                    tablesReferences: ['orders'],
+                    hidden: false,
+                },
+            },
+            lineageGraph: {},
+        },
+    },
+};
+
+export const METRIC_QUERY_SUM_DISTINCT_WITH_DIMS: CompiledMetricQuery = {
+    exploreName: 'orders',
+    dimensions: ['orders_payment_method', 'orders_status'],
+    metrics: ['orders_total_revenue'],
+    filters: {},
+    sorts: [{ fieldId: 'orders_total_revenue', descending: true }],
+    limit: 10,
+    tableCalculations: [],
+    compiledTableCalculations: [],
+    compiledAdditionalMetrics: [],
+    compiledCustomDimensions: [],
+};
+
+export const METRIC_QUERY_SUM_DISTINCT_NO_DIMS: CompiledMetricQuery = {
+    exploreName: 'orders',
+    dimensions: [],
+    metrics: ['orders_total_revenue'],
+    filters: {},
+    sorts: [{ fieldId: 'orders_total_revenue', descending: true }],
+    limit: 10,
+    tableCalculations: [],
+    compiledTableCalculations: [],
+    compiledAdditionalMetrics: [],
+    compiledCustomDimensions: [],
+};
 
 // Expected: SELECT uses DATE_TRUNC (zoomed), but WHERE uses raw column
 export const METRIC_QUERY_WITH_DATE_ZOOM_FILTER_SQL = `SELECT

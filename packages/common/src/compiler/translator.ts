@@ -1212,6 +1212,7 @@ export const convertExplores = async (
                             : {}),
                     },
                     projectParameters: lightdashProjectConfig.parameters,
+                    projectDefaults: lightdashProjectConfig.defaults,
                 });
             } catch (e: unknown) {
                 return {

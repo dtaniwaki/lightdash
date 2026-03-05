@@ -517,6 +517,15 @@ export class SnowflakeWarehouseClient extends WarehouseBaseClient<CreateSnowflak
             `ALTER SESSION SET QUOTED_IDENTIFIERS_IGNORE_CASE = FALSE;`,
         );
 
+        // Default timeout to 300 seconds if not specified
+        const timeoutSeconds = this.credentials.timeoutSeconds ?? 300;
+        console.debug(
+            `Setting Snowflake session STATEMENT_TIMEOUT_IN_SECONDS = ${timeoutSeconds}`,
+        );
+        sqlStatements.push(
+            `ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = ${timeoutSeconds};`,
+        );
+
         await this.executeStatements(
             connection,
             sqlStatements.join('\n'),
