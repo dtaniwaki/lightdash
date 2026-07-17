@@ -201,13 +201,16 @@ export type MetricQuery = {
      * Used by row_total() to determine non-pivot dimensions for GROUP BY. */
     pivotDimensions?: FieldId[];
     metadata?: {
-        hasADateDimension: Pick<CompiledDimension, 'label' | 'name' | 'table'>;
+        hasADateDimension?: Pick<CompiledDimension, 'label' | 'name' | 'table'>;
+        labelDimensionMap?: Record<FieldId, FieldId>;
     };
 };
 export type CompiledMetricQuery = Omit<MetricQuery, 'customDimensions'> & {
     compiledTableCalculations: CompiledTableCalculation[];
     compiledAdditionalMetrics: CompiledMetric[];
     compiledCustomDimensions: CompiledCustomDimension[];
+    companionLabelDimensionIds?: FieldId[];
+    labelDimensionMap?: Record<FieldId, FieldId>;
 };
 /**
  * Coordinates of a single pivot column, used to anchor a row sort to that
@@ -258,7 +261,8 @@ export type MetricQueryResponse = {
     additionalMetrics?: AdditionalMetric[]; // existing metric type
     customDimensions?: CustomDimension[];
     metadata?: {
-        hasADateDimension: Pick<CompiledDimension, 'label' | 'name' | 'table'>;
+        hasADateDimension?: Pick<CompiledDimension, 'label' | 'name' | 'table'>;
+        labelDimensionMap?: Record<FieldId, FieldId>;
     };
 };
 

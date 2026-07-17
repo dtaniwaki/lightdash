@@ -3,6 +3,7 @@ import utc from 'dayjs/plugin/utc';
 import { z } from 'zod';
 import { type AnyType } from './types/any';
 import { LightdashMode } from './types/api';
+import { NotFoundError, ParameterError } from './types/errors';
 import { type Explore } from './types/explore';
 import {
     DimensionType,
@@ -585,6 +586,34 @@ export const findFieldByIdInExplore = (
 ): Field | undefined =>
     getFields(explore).find((field) => getItemId(field) === id);
 
+export const resolveLabelDimensionId = (
+    field: Dimension,
+    explore: Explore,
+): FieldId | null => {
+    const labelDimension = field.filterAutocomplete?.labelDimension;
+    if (!labelDimension) return null;
+    const candidateLabelFieldId = getItemId({
+        table: field.table,
+        name: labelDimension,
+    });
+    if (candidateLabelFieldId === getItemId(field)) return null;
+    const resolvedLabelField = findFieldByIdInExplore(
+        explore,
+        candidateLabelFieldId,
+    );
+    if (!resolvedLabelField) {
+        throw new NotFoundError(
+            `Can't find label dimension '${labelDimension}' in table '${field.table}'`,
+        );
+    }
+    if (!isDimension(resolvedLabelField)) {
+        throw new ParameterError(
+            `Label field must be a dimension, but ${candidateLabelFieldId} is a ${resolvedLabelField.type}`,
+        );
+    }
+    return candidateLabelFieldId;
+};
+
 export const snakeCaseName = (text: string): string =>
     text
         .replace(/\W+/g, ' ')
@@ -768,6 +797,7 @@ export function getItemMap(
 export const getFieldsFromMetricQuery = (
     metricQuery: MetricQuery,
     explore: Explore,
+    excludeFieldIds?: Set<FieldId>,
 ): ItemsMap => {
     const itemsMap = getItemMap(
         explore,
@@ -781,6 +811,7 @@ export const getFieldsFromMetricQuery = (
         ...(metricQuery.tableCalculations || []).map(getItemId),
     ];
     return itemIdsInMetricQuery.reduce<ItemsMap>((acc, id) => {
+        if (excludeFieldIds?.has(id)) return acc;
         const item = itemsMap[id];
         if (item) acc[id] = item;
         return acc;
