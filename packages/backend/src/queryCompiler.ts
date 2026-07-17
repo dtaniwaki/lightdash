@@ -11,6 +11,7 @@ import {
     detectCircularDependencies,
     Explore,
     ExploreCompiler,
+    getErrorMessage,
     getItemId,
     getReservedParameterNames,
     isCustomBinDimension,
@@ -33,6 +34,7 @@ import {
     parse as parseFormula,
 } from '@lightdash/formula';
 import { mapAdapterToFormulaDialect } from './formulaDialectMapper';
+import Logger from './logging/logger';
 import { compileTableCalculationFromTemplate } from './tableCalculationTemplateQueryCompiler';
 
 const formatFormulaError = (displayName: string, error: unknown): string => {
@@ -456,9 +458,19 @@ export const compileMetricQuery = ({
             (dimension) => getItemId(dimension) === dimensionId,
         );
         if (field) {
-            const labelFieldId = resolveLabelDimensionId(field, explore);
-            if (labelFieldId) {
-                labelDimensionMap[dimensionId] = labelFieldId;
+            try {
+                const labelFieldId = resolveLabelDimensionId(field, explore);
+                if (labelFieldId) {
+                    labelDimensionMap[dimensionId] = labelFieldId;
+                }
+            } catch (error) {
+                // A misconfigured label_dimension must not break the chart query;
+                // it still surfaces on the filter-autocomplete path.
+                Logger.warn(
+                    `Skipping label dimension for '${dimensionId}': ${getErrorMessage(
+                        error,
+                    )}`,
+                );
             }
         }
     });

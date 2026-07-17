@@ -1437,6 +1437,37 @@ describe('compileMetricQuery label dimensions', () => {
         expect(result.dimensions).toEqual(METRIC_QUERY_NO_CALCS.dimensions);
     });
 
+    test('does not throw when the label dimension is misconfigured', () => {
+        const exploreWithBadLabel: Pick<Explore, 'targetDatabase' | 'tables'> =
+            {
+                targetDatabase: SupportedDbtAdapter.POSTGRES,
+                tables: {
+                    table1: {
+                        ...emptyTable('table1'),
+                        dimensions: {
+                            customer_id: makeDimension('customer_id', {
+                                fetchFromWarehouse: true,
+                                labelDimension: 'does_not_exist',
+                            }),
+                        },
+                    },
+                },
+            };
+
+        let result: CompiledMetricQuery | undefined;
+        expect(() => {
+            result = compileMetricQuery({
+                explore: exploreWithBadLabel,
+                metricQuery: baseMetricQuery,
+                warehouseSqlBuilder: warehouseClientMock,
+                availableParameters: [],
+            });
+        }).not.toThrow();
+        expect(result?.labelDimensionMap).toBeUndefined();
+        expect(result?.companionLabelDimensionIds).toBeUndefined();
+        expect(result?.dimensions).toEqual(['table1_customer_id']);
+    });
+
     test('does not duplicate a label dimension already selected', () => {
         const result = compileMetricQuery({
             explore: exploreWithLabelDimension,

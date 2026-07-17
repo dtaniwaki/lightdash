@@ -205,8 +205,15 @@ export const getCartesianAxisFormatterConfig = ({
             default:
         }
     }
+    // Only categorical axes are labelled — a label dimension on a
+    // date/time-interval axis keeps its native (min-interval/rich) formatting.
+    const isCategoricalAxis =
+        !isTimestamp &&
+        !(isDimension(axisItem) && axisItem.timeInterval !== undefined);
     const axisFieldId =
-        axisItem && isField(axisItem) ? getItemId(axisItem) : undefined;
+        axisItem && isField(axisItem) && isCategoricalAxis
+            ? getItemId(axisItem)
+            : undefined;
     const axisLabels = axisFieldId ? labelValueMap?.[axisFieldId] : undefined;
     if (axisFieldId && axisLabels) {
         axisConfig.axisLabel = {
