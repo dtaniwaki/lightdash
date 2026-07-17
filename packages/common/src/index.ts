@@ -588,7 +588,7 @@ export const findFieldByIdInExplore = (
 
 export const resolveLabelDimensionId = (
     field: Dimension,
-    explore: Explore,
+    explore: Pick<Explore, 'tables'>,
 ): FieldId | null => {
     const labelDimension = field.filterAutocomplete?.labelDimension;
     if (!labelDimension) return null;
@@ -597,18 +597,16 @@ export const resolveLabelDimensionId = (
         name: labelDimension,
     });
     if (candidateLabelFieldId === getItemId(field)) return null;
-    const resolvedLabelField = findFieldByIdInExplore(
-        explore,
-        candidateLabelFieldId,
-    );
-    if (!resolvedLabelField) {
-        throw new NotFoundError(
-            `Can't find label dimension '${labelDimension}' in table '${field.table}'`,
+    const table = explore.tables[field.table];
+    const labelMetric = table?.metrics[labelDimension];
+    if (labelMetric) {
+        throw new ParameterError(
+            `Label field must be a dimension, but ${candidateLabelFieldId} is a ${labelMetric.type}`,
         );
     }
-    if (!isDimension(resolvedLabelField)) {
-        throw new ParameterError(
-            `Label field must be a dimension, but ${candidateLabelFieldId} is a ${resolvedLabelField.type}`,
+    if (!table?.dimensions[labelDimension]) {
+        throw new NotFoundError(
+            `Can't find label dimension '${labelDimension}' in table '${field.table}'`,
         );
     }
     return candidateLabelFieldId;

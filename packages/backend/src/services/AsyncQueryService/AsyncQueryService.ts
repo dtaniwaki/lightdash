@@ -3471,6 +3471,9 @@ export class AsyncQueryService extends ProjectService {
         const fields = getFieldsFromMetricQuery(
             compiledMetricQuery,
             exploreWithOverride,
+            compiledMetricQuery.companionLabelDimensionIds
+                ? new Set(compiledMetricQuery.companionLabelDimensionIds)
+                : undefined,
         );
 
         return { fields, dateZoomApplied };

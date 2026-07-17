@@ -23,6 +23,7 @@ import {
     MetricQuery,
     MetricType,
     PivotConfiguration,
+    resolveLabelDimensionId,
     TableCalculation,
     type WarehouseSqlBuilder,
 } from '@lightdash/common';
@@ -446,10 +447,33 @@ export const compileMetricQuery = ({
         customBinDimensionIds,
     );
 
+    const exploreDimensions = Object.values(explore.tables).flatMap((table) =>
+        Object.values(table.dimensions),
+    );
+    const labelDimensionMap: Record<string, string> = {};
+    metricQuery.dimensions.forEach((dimensionId) => {
+        const field = exploreDimensions.find(
+            (dimension) => getItemId(dimension) === dimensionId,
+        );
+        if (field) {
+            const labelFieldId = resolveLabelDimensionId(field, explore);
+            if (labelFieldId) {
+                labelDimensionMap[dimensionId] = labelFieldId;
+            }
+        }
+    });
+    const companionLabelDimensionIds = [
+        ...new Set(Object.values(labelDimensionMap)),
+    ].filter((labelFieldId) => !metricQuery.dimensions.includes(labelFieldId));
+    const hasLabelDimensions = Object.keys(labelDimensionMap).length > 0;
+
     return {
         ...metricQuery,
+        dimensions: [...metricQuery.dimensions, ...companionLabelDimensionIds],
         compiledTableCalculations,
         compiledAdditionalMetrics,
         compiledCustomDimensions,
+        companionLabelDimensionIds,
+        labelDimensionMap: hasLabelDimensions ? labelDimensionMap : undefined,
     };
 };

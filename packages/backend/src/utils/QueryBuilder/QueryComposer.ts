@@ -143,7 +143,18 @@ export class QueryComposer {
 
     /** The effective (totals-collapsed) metric query the composer compiles. */
     getMetricQuery(): MetricQuery {
-        return this.getEffectiveDefinition().metricQuery;
+        const { metricQuery } = this.getEffectiveDefinition();
+        const { labelDimensionMap } = this.compile();
+        if (!labelDimensionMap) {
+            return metricQuery;
+        }
+        return {
+            ...metricQuery,
+            metadata: {
+                ...metricQuery.metadata,
+                labelDimensionMap,
+            },
+        };
     }
 
     /** The effective (totals-collapsed) pivot configuration, if any. */
