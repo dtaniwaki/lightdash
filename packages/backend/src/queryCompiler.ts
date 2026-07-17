@@ -469,11 +469,19 @@ export const compileMetricQuery = ({
 
     return {
         ...metricQuery,
-        dimensions: [...metricQuery.dimensions, ...companionLabelDimensionIds],
+        ...(companionLabelDimensionIds.length > 0
+            ? {
+                  dimensions: [
+                      ...metricQuery.dimensions,
+                      ...companionLabelDimensionIds,
+                  ],
+              }
+            : {}),
         compiledTableCalculations,
         compiledAdditionalMetrics,
         compiledCustomDimensions,
-        companionLabelDimensionIds,
-        labelDimensionMap: hasLabelDimensions ? labelDimensionMap : undefined,
+        ...(hasLabelDimensions
+            ? { companionLabelDimensionIds, labelDimensionMap }
+            : {}),
     };
 };
