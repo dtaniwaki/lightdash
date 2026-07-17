@@ -151,10 +151,7 @@ export class QueryComposer {
         }
         return {
             ...metricQuery,
-            metadata: {
-                ...metricQuery.metadata,
-                labelDimensionMap,
-            },
+            labelDimensionMap,
         };
     }
 
