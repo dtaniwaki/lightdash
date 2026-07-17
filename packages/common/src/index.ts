@@ -334,6 +334,7 @@ export * from './utils/exportTabs';
 export * from './utils/fields';
 export * from './utils/filters';
 export * from './utils/formatting';
+export * from './utils/labelValueMap';
 export * from './utils/github';
 export * from './utils/i18n/chartAsCode';
 export * from './utils/i18n/dashboardAsCode';
