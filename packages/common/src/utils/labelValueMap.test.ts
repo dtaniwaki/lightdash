@@ -1,5 +1,11 @@
 import { type ResultRow } from '../types/results';
-import { buildLabelValueMap, getLabelForValue } from './labelValueMap';
+import { type PivotValuesColumn } from '../visualizations/types';
+import {
+    buildLabelValueMap,
+    buildLabelValueMapFromPivotValues,
+    getLabelForValue,
+    mergeLabelValueMaps,
+} from './labelValueMap';
 
 const row = (cells: Record<string, unknown>): ResultRow =>
     Object.fromEntries(
@@ -54,6 +60,74 @@ describe('buildLabelValueMap', () => {
             }),
         ).toEqual({
             orders_customer_id: { '3': 'Carol' },
+        });
+    });
+});
+
+const valuesColumn = (
+    pivotValues: PivotValuesColumn['pivotValues'],
+): PivotValuesColumn => ({
+    referenceField: 'orders_model_total_amount',
+    pivotColumnName: 'orders_model_total_amount_sum',
+    aggregation: 'sum' as PivotValuesColumn['aggregation'],
+    pivotValues,
+});
+
+describe('buildLabelValueMapFromPivotValues', () => {
+    it('returns an empty map when there are no columns', () => {
+        expect(buildLabelValueMapFromPivotValues(undefined)).toEqual({});
+        expect(buildLabelValueMapFromPivotValues([])).toEqual({});
+    });
+
+    it('maps each pivot value to its companion label', () => {
+        expect(
+            buildLabelValueMapFromPivotValues([
+                valuesColumn([
+                    {
+                        referenceField: 'orders_region_cd',
+                        value: 1,
+                        formatted: '1',
+                        label: 'North',
+                    },
+                ]),
+                valuesColumn([
+                    {
+                        referenceField: 'orders_region_cd',
+                        value: 2,
+                        formatted: '2',
+                        label: 'South',
+                    },
+                ]),
+            ]),
+        ).toEqual({
+            orders_region_cd: { '1': 'North', '2': 'South' },
+        });
+    });
+
+    it('skips pivot values that have no label', () => {
+        expect(
+            buildLabelValueMapFromPivotValues([
+                valuesColumn([
+                    { referenceField: 'orders_region_cd', value: 1 },
+                ]),
+            ]),
+        ).toEqual({});
+    });
+});
+
+describe('mergeLabelValueMaps', () => {
+    it('merges maps across fields, later maps winning on key conflicts', () => {
+        expect(
+            mergeLabelValueMaps(
+                { orders_region_cd: { '1': 'North' } },
+                {
+                    orders_region_cd: { '1': 'North (dupe)', '2': 'South' },
+                    orders_other: { a: 'A' },
+                },
+            ),
+        ).toEqual({
+            orders_region_cd: { '1': 'North (dupe)', '2': 'South' },
+            orders_other: { a: 'A' },
         });
     });
 });

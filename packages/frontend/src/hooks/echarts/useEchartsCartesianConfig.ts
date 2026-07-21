@@ -26,6 +26,8 @@ import {
     getCustomFormatFromLegacy,
     getDateGroupLabel,
     buildLabelValueMap,
+    buildLabelValueMapFromPivotValues,
+    mergeLabelValueMaps,
     getFormatExpressionLocale,
     getFormattedValue,
     getFormatterTimezone,
@@ -3242,11 +3244,20 @@ const useEchartsCartesianConfig = (
 
     const labelValueMap = useMemo(
         () =>
-            buildLabelValueMap(
-                resultsData?.rows ?? [],
-                resultsData?.metricQuery?.labelDimensionMap,
+            mergeLabelValueMaps(
+                buildLabelValueMap(
+                    resultsData?.rows ?? [],
+                    resultsData?.metricQuery?.labelDimensionMap,
+                ),
+                buildLabelValueMapFromPivotValues(
+                    resultsData?.pivotDetails?.valuesColumns,
+                ),
             ),
-        [resultsData?.rows, resultsData?.metricQuery?.labelDimensionMap],
+        [
+            resultsData?.rows,
+            resultsData?.metricQuery?.labelDimensionMap,
+            resultsData?.pivotDetails?.valuesColumns,
+        ],
     );
 
     const { timeAxisField, axisTimezone, axisDisplayTimezone } = useMemo(
