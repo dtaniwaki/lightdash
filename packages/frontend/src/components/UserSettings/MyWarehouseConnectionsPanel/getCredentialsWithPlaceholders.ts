@@ -10,6 +10,13 @@ export const getCredentialsWithPlaceholders = (
 ): UpsertUserWarehouseCredentials['credentials'] => {
     switch (credentials.type) {
         case WarehouseTypes.REDSHIFT:
+            return {
+                ...credentials,
+                password: '',
+                accessKeyId: '',
+                secretAccessKey: '',
+                sessionToken: '',
+            };
         case WarehouseTypes.SNOWFLAKE:
         case WarehouseTypes.POSTGRES:
         case WarehouseTypes.TRINO:

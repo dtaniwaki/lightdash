@@ -2112,7 +2112,6 @@ describe('buildRelationName fallback when relation_name is missing', () => {
                 schema: 'mySchema',
                 alias: 'myAlias',
             },
-            [],
             DEFAULT_SPOTLIGHT_CONFIG,
         );
         expect(result.sqlTable).toBe('"myDb"."mySchema"."myAlias"');
@@ -2127,7 +2126,6 @@ describe('buildRelationName fallback when relation_name is missing', () => {
                 schema: 'dataset',
                 alias: 'table',
             },
-            [],
             DEFAULT_SPOTLIGHT_CONFIG,
         );
         expect(result.sqlTable).toBe('`project`.`dataset`.`table`');
@@ -2137,7 +2135,6 @@ describe('buildRelationName fallback when relation_name is missing', () => {
         const result = convertTable(
             SupportedDbtAdapter.DATABRICKS,
             { ...baseModel, database: 'catalog', schema: 'db', alias: 'tbl' },
-            [],
             DEFAULT_SPOTLIGHT_CONFIG,
         );
         expect(result.sqlTable).toBe('`catalog`.`db`.`tbl`');
@@ -2152,7 +2149,6 @@ describe('buildRelationName fallback when relation_name is missing', () => {
                 schema: 'myschema',
                 alias: 'mytable',
             },
-            [],
             DEFAULT_SPOTLIGHT_CONFIG,
         );
         expect(result.sqlTable).toBe('"awscatalog"."myschema"."mytable"');
@@ -2162,7 +2158,6 @@ describe('buildRelationName fallback when relation_name is missing', () => {
         const result = convertTable(
             SupportedDbtAdapter.SNOWFLAKE,
             { ...baseModel, database: 'DB', schema: 'SCH', alias: 'TBL' },
-            [],
             DEFAULT_SPOTLIGHT_CONFIG,
         );
         expect(result.sqlTable).toBe('"DB"."SCH"."TBL"');
@@ -2178,7 +2173,6 @@ describe('buildRelationName fallback when relation_name is missing', () => {
                 alias: undefined as unknown as string,
                 name: 'my_model',
             },
-            [],
             DEFAULT_SPOTLIGHT_CONFIG,
         );
         expect(result.sqlTable).toBe('"myDb"."mySchema"."my_model"');
@@ -2193,7 +2187,6 @@ describe('buildRelationName fallback when relation_name is missing', () => {
                 schema: 'mySchema',
                 alias: 'myAlias',
             },
-            [],
             DEFAULT_SPOTLIGHT_CONFIG,
         );
         expect(result.sqlTable).toBe('"mySchema"."myAlias"');
@@ -2209,7 +2202,6 @@ describe('buildRelationName fallback when relation_name is missing', () => {
                 schema: 'mySchema',
                 alias: 'myAlias',
             },
-            [],
             DEFAULT_SPOTLIGHT_CONFIG,
         );
         expect(result.sqlTable).toBe('explicit_relation');
@@ -2227,7 +2219,6 @@ describe('buildRelationName fallback when relation_name is missing', () => {
         const result = convertTable(
             SupportedDbtAdapter.POSTGRES,
             modelWithSqlFrom,
-            [],
             DEFAULT_SPOTLIGHT_CONFIG,
         );
         expect(result.sqlTable).toBe('custom_sql_table');
