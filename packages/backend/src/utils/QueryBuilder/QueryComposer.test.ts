@@ -1,8 +1,12 @@
 import {
     CustomFormatType,
+    Explore,
+    FilterOperator,
     MetricQuery,
     PivotConfiguration,
     SortByDirection,
+    TableCalculationTotalMode,
+    TableCalculationType,
     VizAggregationOptions,
     VizIndexType,
 } from '@lightdash/common';
@@ -181,5 +185,137 @@ describe('QueryComposer', () => {
                 expect(composer.getSql({ columnLimit: 100 })).toMatchSnapshot();
             },
         );
+
+        describe('metric-filtered source (filtered dimension groups)', () => {
+            const METRIC_FILTERED_TOTALS_SOURCE: MetricQuery = {
+                ...TOTALS_SOURCE_METRIC_QUERY,
+                filters: {
+                    metrics: {
+                        id: 'root',
+                        and: [
+                            {
+                                id: '1',
+                                target: { fieldId: 'table1_metric1' },
+                                operator: FilterOperator.GREATER_THAN,
+                                values: [10],
+                            },
+                        ],
+                    },
+                },
+            };
+
+            it.each([
+                { kind: 'columnTotal' as const, subtotalDimensions: undefined },
+                {
+                    kind: 'columnSubtotal' as const,
+                    subtotalDimensions: ['table1_dim1'],
+                },
+            ])(
+                'restricts the totals query to the filtered dimension groups for kind "$kind"',
+                ({ kind, subtotalDimensions }) => {
+                    const composer = new QueryComposer(
+                        {
+                            metricQuery: METRIC_FILTERED_TOTALS_SOURCE,
+                            pivotConfiguration:
+                                TOTALS_SOURCE_PIVOT_CONFIGURATION,
+                            totalConfiguration: { kind, subtotalDimensions },
+                        },
+                        CONTEXT,
+                    );
+
+                    const sql = composer.getSql({ columnLimit: 100 });
+                    // The metric filter must not survive into the collapsed
+                    // totals grain; it is enforced by the semi-join instead.
+                    expect(sql).toContain('source_dimension_groups');
+                    expect(sql).toMatchSnapshot();
+                },
+            );
+
+            it('sums sum-of-rows table calcs over the shared filtered-groups CTE', () => {
+                const composer = new QueryComposer(
+                    {
+                        metricQuery: {
+                            ...METRIC_FILTERED_TOTALS_SOURCE,
+                            tableCalculations: [
+                                {
+                                    name: 'metric_plus_two',
+                                    displayName: 'Metric plus two',
+                                    sql: '${table1.metric1} + 2',
+                                    type: TableCalculationType.NUMBER,
+                                    totalMode:
+                                        TableCalculationTotalMode.SUM_OF_ROWS,
+                                },
+                            ],
+                        },
+                        pivotConfiguration: undefined,
+                        totalConfiguration: {
+                            kind: 'grandTotal',
+                            subtotalDimensions: undefined,
+                        },
+                    },
+                    CONTEXT,
+                );
+
+                const sql = composer.getSql({ columnLimit: 100 });
+                expect(sql).toContain('source_aggregations');
+                // Restriction and aggregations share one source embed.
+                expect(sql.match(/source_rows AS \(/g)).toHaveLength(1);
+                expect(sql).toMatchSnapshot();
+            });
+        });
+    });
+});
+
+describe('getPivotConfiguration with label dimensions', () => {
+    const exploreWithLabel: Explore = {
+        ...EXPLORE,
+        tables: {
+            ...EXPLORE.tables,
+            table1: {
+                ...EXPLORE.tables.table1,
+                dimensions: {
+                    ...EXPLORE.tables.table1.dimensions,
+                    dim1: {
+                        ...EXPLORE.tables.table1.dimensions.dim1,
+                        filterAutocomplete: {
+                            fetchFromWarehouse: true,
+                            labelDimension: 'shared',
+                        },
+                    },
+                },
+            },
+        },
+    };
+
+    const metricQuery: MetricQuery = {
+        exploreName: 'table1',
+        dimensions: ['table1_dim1'],
+        metrics: ['table1_metric1'],
+        filters: {},
+        sorts: [{ fieldId: 'table1_dim1', descending: false }],
+        limit: 500,
+        tableCalculations: [],
+    };
+
+    it('folds the companion label dimension into passthroughDimensions', () => {
+        const composer = new QueryComposer(
+            { metricQuery, pivotConfiguration: PIVOT_CONFIGURATION },
+            { ...CONTEXT, explore: exploreWithLabel },
+        );
+
+        expect(composer.getPivotConfiguration()?.passthroughDimensions).toEqual(
+            [{ reference: 'table1_shared' }],
+        );
+    });
+
+    it('leaves passthroughDimensions untouched when no label dimension is set', () => {
+        const composer = new QueryComposer(
+            { metricQuery, pivotConfiguration: PIVOT_CONFIGURATION },
+            CONTEXT,
+        );
+
+        expect(
+            composer.getPivotConfiguration()?.passthroughDimensions,
+        ).toBeUndefined();
     });
 });

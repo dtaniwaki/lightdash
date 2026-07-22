@@ -22,6 +22,10 @@ import {
 } from '../../types/savedCharts';
 import { TimeFrames } from '../../types/timeFrames';
 import { formatDateWithPattern, formatItemValue } from '../../utils/formatting';
+import {
+    getLabelForValue,
+    type LabelValueMap,
+} from '../../utils/labelValueMap';
 import { sanitizeHtml } from '../../utils/sanitizeHtml';
 import {
     StackType,
@@ -313,6 +317,7 @@ const getHeader = (
     xFieldId?: string,
     timezone?: string,
     displayTimezone?: string,
+    labelValueMap?: LabelValueMap,
 ): string => {
     const firstParam = params[0];
 
@@ -320,6 +325,17 @@ const getHeader = (
     // undefined on some stack100 tooltip fires, so fall back to value[0] and
     // then to the dataset row.
     const rawAxisValue = firstParam?.axisValue;
+
+    if (xFieldId) {
+        const headerLabel = getLabelForValue(
+            labelValueMap,
+            xFieldId,
+            rawAxisValue,
+        );
+        if (headerLabel !== undefined) {
+            return headerLabel;
+        }
+    }
     if (timezone && itemsMap && xFieldId) {
         const formatViaTz = (v: unknown) =>
             getFormattedValue(
@@ -549,6 +565,8 @@ export function createStack100TooltipFormatter(
     xAxisDateFormat?: string,
     timezone?: string,
     displayTimezone?: string,
+    pivotValuesColumnsMap?: Record<string, PivotValuesColumn>,
+    parameters?: ParametersValuesMap,
 ) {
     return (params: TooltipParams) => {
         if (!Array.isArray(params)) return '';
@@ -622,9 +640,21 @@ export function createStack100TooltipFormatter(
                         ? `${percentage.toFixed(1)}%`
                         : '0.0%';
                 const countStr =
-                    typeof originalValue === 'number'
-                        ? originalValue.toLocaleString()
-                        : '0';
+                    // eslint-disable-next-line no-nested-ternary
+                    typeof originalValue !== 'number'
+                        ? '0'
+                        : itemsMap
+                          ? getFormattedValue(
+                                originalValue,
+                                dimensionName,
+                                itemsMap,
+                                undefined,
+                                pivotValuesColumnsMap,
+                                parameters,
+                                timezone,
+                                displayTimezone,
+                            )
+                          : originalValue.toLocaleString();
 
                 const colorIndicator = formatColorIndicator(
                     extractColor(marker),
@@ -927,6 +957,7 @@ export const buildCartesianTooltipFormatter =
         rows,
         timezone,
         displayTimezone,
+        labelValueMap,
     }: {
         itemsMap?: ItemsMap;
         stackValue: string | boolean | undefined;
@@ -943,6 +974,7 @@ export const buildCartesianTooltipFormatter =
         rows?: (ResultRow | Record<string, unknown>)[];
         timezone?: string;
         displayTimezone?: string;
+        labelValueMap?: LabelValueMap;
     }): TooltipComponentFormatterCallback<
         TooltipFormatterParams | TooltipFormatterParams[]
     > =>
@@ -971,6 +1003,8 @@ export const buildCartesianTooltipFormatter =
                 undefined,
                 timezone,
                 displayTimezone,
+                pivotValuesColumnsMap,
+                parameters,
             )(params as TooltipParam[]);
         }
 
@@ -980,6 +1014,7 @@ export const buildCartesianTooltipFormatter =
             xFieldId,
             timezone,
             displayTimezone,
+            labelValueMap,
         );
 
         const sortedParams = sortTooltipParams(

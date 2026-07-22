@@ -58,6 +58,7 @@ import {
     isCustomBinDimension,
     isCustomDimension,
     isDateItem,
+    isDimension,
     isExploreError,
     isField,
     isJwtUser,
@@ -162,6 +163,7 @@ import {
 import { TotalQueryBuilder } from '../../utils/QueryBuilder/TotalQueryBuilder';
 import {
     applyLimitToSqlQuery,
+    hasBlockingTotalFilters,
     replaceUserAttributesAsStrings,
 } from '../../utils/QueryBuilder/utils';
 import { SubtotalsCalculator } from '../../utils/SubtotalsCalculator';
@@ -1522,9 +1524,7 @@ export class AsyncQueryService extends ProjectService {
                     error: getErrorMessage(error),
                 });
                 throw new ParseError(
-                    `Failed to parse JSON from first line: ${getErrorMessage(
-                        error,
-                    )}`,
+                    `Failed to parse JSON from first line: ${getErrorMessage(error)}`,
                 );
             }
         }
@@ -2116,12 +2116,39 @@ export class AsyncQueryService extends ProjectService {
                                         displayTimezone ?? undefined,
                                     )
                                   : String(rawValue);
+                              const labelDimension =
+                                  field && isField(field) && isDimension(field)
+                                      ? field.filterAutocomplete?.labelDimension
+                                      : undefined;
+                              let label: string | undefined;
+                              if (labelDimension && isField(field)) {
+                                  // Companion label rides along as a passthrough
+                                  // dim, so its value is on this warehouse row.
+                                  const labelFieldId = getItemId({
+                                      table: field.table,
+                                      name: labelDimension,
+                                  });
+                                  const labelRawValue = row[labelFieldId];
+                                  if (labelRawValue !== undefined) {
+                                      const labelField = itemsMap[labelFieldId];
+                                      label = labelField
+                                          ? formatItemValue(
+                                                labelField,
+                                                labelRawValue,
+                                                false,
+                                                undefined,
+                                                displayTimezone ?? undefined,
+                                            )
+                                          : String(labelRawValue);
+                                  }
+                              }
                               return {
                                   referenceField: c.reference,
                                   // value needs to be raw formatted so that dates match the subtotals and the formatted rows
                                   value: rawValue,
                                   // formatted value to match the display value in the frontend
                                   formatted: formattedValue,
+                                  ...(label !== undefined ? { label } : {}),
                               };
                           }) ?? [];
 
@@ -3471,6 +3498,9 @@ export class AsyncQueryService extends ProjectService {
         const fields = getFieldsFromMetricQuery(
             compiledMetricQuery,
             exploreWithOverride,
+            compiledMetricQuery.companionLabelDimensionIds
+                ? new Set(compiledMetricQuery.companionLabelDimensionIds)
+                : undefined,
         );
 
         return { fields, dateZoomApplied };
@@ -3490,6 +3520,7 @@ export class AsyncQueryService extends ProjectService {
         userAttributeOverrides,
         materializationRole,
         columnTimezone,
+        dataTimezone,
         sessionTimezone,
         applyDateZoomToFilters,
         preloadedUserAccessControls,
@@ -3517,6 +3548,7 @@ export class AsyncQueryService extends ProjectService {
          */
         pivotDimensions?: string[];
         columnTimezone?: string;
+        dataTimezone?: string;
         sessionTimezone?: string | null;
         /**
          * Opt-in: rewrite WHERE filter LHS to use the zoom-grain dimension
@@ -3598,6 +3630,7 @@ export class AsyncQueryService extends ProjectService {
                 pivotDimensions: pivotDimensions ?? metricQuery.pivotDimensions,
                 useTimezoneAwareDateTrunc,
                 columnTimezone,
+                dataTimezone,
                 rebaseRawTimestampFilters,
                 applyDateZoomToFilters,
                 displayTimezone,
@@ -3732,7 +3765,6 @@ export class AsyncQueryService extends ProjectService {
                     const resolvedDataTimezone = isTimezoneSupportEnabled
                         ? warehouseCredentials.dataTimezone
                         : undefined;
-
                     // Generate cache key from project and query identifiers
                     // Include user UUID to prevent cache sharing between users when user-specific credentials are in use
                     // Use the resolved timezone (not metricQuery.timezone) because the
@@ -3783,6 +3815,7 @@ export class AsyncQueryService extends ProjectService {
                             },
                             cacheKey,
                             pivotConfiguration: pivotConfiguration ?? null,
+                            originalColumns: originalColumns ?? null,
                         });
                     const historyCreateMs = Date.now() - historyCreateStart;
                     this.prometheusMetrics?.trackQueryStateTransition(
@@ -3887,7 +3920,11 @@ export class AsyncQueryService extends ProjectService {
                                 error: null,
                                 total_row_count: resultsCache.totalRowCount,
                                 columns: resultsCache.columns,
-                                original_columns: resultsCache.originalColumns,
+                                // Cached rows created before original columns were persisted at creation may hold null — don't clobber the value this row was created with
+                                original_columns:
+                                    resultsCache.originalColumns ??
+                                    originalColumns ??
+                                    null,
                                 results_file_name: resultsCache.fileName,
                                 results_created_at: resultsCache.createdAt,
                                 results_updated_at: resultsCache.updatedAt,
@@ -3932,9 +3969,7 @@ export class AsyncQueryService extends ProjectService {
                         await this.queryHistoryModel.updateStatusToError(
                             queryHistoryUuid,
                             projectUuid,
-                            `Missing parameters: ${missingParameterReferences.join(
-                                ', ',
-                            )}`,
+                            `Missing parameters: ${missingParameterReferences.join(', ')}`,
                             account,
                         );
                         this.prometheusMetrics?.trackQueryStateTransition(
@@ -4447,6 +4482,7 @@ export class AsyncQueryService extends ProjectService {
             userAttributeOverrides,
             materializationRole,
             columnTimezone: getColumnTimezone(warehouseCredentials),
+            dataTimezone: warehouseCredentials.dataTimezone,
             preloadedUserAccessControls,
             preloadedProjectParameters: projectParameters,
             preloadedProjectTimezone: projectTimezone,
@@ -4669,6 +4705,7 @@ export class AsyncQueryService extends ProjectService {
             projectUuid,
             userAttributeOverrides,
             columnTimezone: getColumnTimezone(warehouseCredentials),
+            dataTimezone: warehouseCredentials.dataTimezone,
         });
 
         const queryTagsWithUserAttributes =
@@ -4743,7 +4780,9 @@ export class AsyncQueryService extends ProjectService {
         const savedChart = await this.savedChartModel.get(
             chartUuid,
             versionUuid,
-            { projectUuid },
+            {
+                projectUuid,
+            },
         );
         const {
             uuid: savedChartUuid,
@@ -4952,6 +4991,7 @@ export class AsyncQueryService extends ProjectService {
             pivotConfiguration,
             pivotDimensions: savedChart.pivotConfig?.columns,
             columnTimezone: getColumnTimezone(warehouseCredentials),
+            dataTimezone: warehouseCredentials.dataTimezone,
             preloadedUserAccessControls,
         });
         const fieldsWithOverrides = queryComposer.getFields();
@@ -5398,6 +5438,7 @@ export class AsyncQueryService extends ProjectService {
             pivotConfiguration,
             pivotDimensions: savedChart.pivotConfig?.columns,
             columnTimezone: getColumnTimezone(warehouseCredentials),
+            dataTimezone: warehouseCredentials.dataTimezone,
             sessionTimezone,
             preloadedUserAccessControls: userAccessControls,
             preloadedProjectParameters: projectParameters,
@@ -5747,6 +5788,7 @@ export class AsyncQueryService extends ProjectService {
             parameters: combinedParameters,
             projectUuid,
             columnTimezone: getColumnTimezone(warehouseCredentials),
+            dataTimezone: warehouseCredentials.dataTimezone,
             // PROD-880: rewrite WHERE LHS to zoom grain (safe here — filters are click-only)
             applyDateZoomToFilters: true,
             preloadedUserAccessControls,
@@ -6070,9 +6112,7 @@ export class AsyncQueryService extends ProjectService {
         const totalTime = performance.now() - startTime;
 
         this.logger.info(
-            `prepareSqlChartAsyncQueryArgs completed in ${totalTime.toFixed(
-                2,
-            )}`,
+            `prepareSqlChartAsyncQueryArgs completed in ${totalTime.toFixed(2)}`,
             {
                 event: 'prepare_sql_chart_async_query_args.completed',
                 projectUuid,
@@ -6664,6 +6704,7 @@ export class AsyncQueryService extends ProjectService {
             projectUuid,
             materializationRole: userAccessControls,
             columnTimezone: getColumnTimezone(warehouseCredentials),
+            dataTimezone: warehouseCredentials.dataTimezone,
         });
         const fields = queryComposer.getFields();
 
@@ -6883,6 +6924,16 @@ export class AsyncQueryService extends ProjectService {
             pivotConfiguration: null,
             kind: 'grandTotal',
         }).compileQuery();
+
+        // This legacy path hand-compiles the collapsed query, so it can't
+        // embed the source query to enforce metric / table-calc filters;
+        // callers catch this error and return empty totals, matching the old
+        // behavior. (Sum-of-rows calc totals just stay blank here.)
+        if (hasBlockingTotalFilters(metricQuery)) {
+            throw new NotSupportedError(
+                'Totals cannot be correctly calculated with metric filters or table calculation filters',
+            );
+        }
 
         const { rows } = await this.executeMetricQueryAndGetResultsForTotals({
             account,
@@ -7322,7 +7373,9 @@ export class AsyncQueryService extends ProjectService {
 
         const dashboard = await this.dashboardModel.getByIdOrSlug(
             dashboardUuid,
-            { projectUuid },
+            {
+                projectUuid,
+            },
         );
 
         const auditedAbility = this.createAuditedAbility(account);

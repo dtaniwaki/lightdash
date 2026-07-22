@@ -103,7 +103,8 @@ export const blockLibrary: BlockDefinition[] = [
     {
         type: 'resources',
         label: 'Resources',
-        description: 'Rich cards — Claude artifacts, YouTube, docs, links.',
+        description:
+            'Rich cards — data apps, Claude artifacts, YouTube, docs, links.',
         icon: IconBook,
         create: () => ({
             id: uuidv4(),
@@ -122,7 +123,7 @@ export const blockLibrary: BlockDefinition[] = [
         create: () => ({
             id: uuidv4(),
             type: 'announcements',
-            config: { title: 'From the data team', items: [] },
+            config: { title: 'From the data team' },
         }),
         View: AnnouncementsBlockView,
         Build: AnnouncementsBlockBuild,

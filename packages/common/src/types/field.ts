@@ -511,6 +511,15 @@ export type TableCalculationTemplate =
           frame?: FrameClause;
       };
 
+export enum TableCalculationTotalMode {
+    /** Apply the calculation to the aggregated totals row (default) — right for ratios */
+    FORMULA = 'formula',
+    /** Sum the calculation's row-level values — right for row-level transformations */
+    SUM_OF_ROWS = 'sum_of_rows',
+    /** Show no total for this calculation */
+    NONE = 'none',
+}
+
 export type TableCalculationBase = {
     /** Display order index */
     index?: number;
@@ -522,6 +531,8 @@ export type TableCalculationBase = {
     format?: CustomFormat;
     /** Data type of the calculation result */
     type?: TableCalculationType;
+    /** How column totals are computed for this calculation */
+    totalMode?: TableCalculationTotalMode;
 };
 
 export type SqlTableCalculation = TableCalculationBase & {
@@ -678,6 +689,15 @@ export enum DimensionType {
     BOOLEAN = 'boolean',
 }
 
+/**
+ * Whether a TIMESTAMP column stores an instant ('aware') or a bare wall clock
+ * ('naive'). Absent means unknown — never assume 'aware' for a missing value.
+ */
+export type TimestampDomain = 'aware' | 'naive';
+
+export const isTimestampDomain = (value: unknown): value is TimestampDomain =>
+    value === 'aware' || value === 'naive';
+
 export type FilterAutocompleteValue = {
     value: string;
     label?: string;
@@ -751,6 +771,7 @@ export interface Dimension extends Field {
     customTimeInterval?: string;
     isAdditionalDimension?: boolean;
     skipTimezoneConversion?: boolean;
+    timestampDomain?: TimestampDomain;
     colors?: Record<string, string>;
     isIntervalBase?: boolean;
     aiHint?: string | string[];

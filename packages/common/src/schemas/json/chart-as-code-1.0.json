@@ -2354,6 +2354,10 @@
                     "description": "The name of the explore to query",
                     "type": "string"
                 },
+                "labelDimensionMap": {
+                    "$ref": "#/$defs/Record_string.string_",
+                    "description": "Maps a dimension field id to the dimension field id whose value labels\nit in charts (sourced from the dimension's filter_autocomplete)."
+                },
                 "limit": {
                     "description": "Maximum number of rows to return",
                     "format": "double",
@@ -2901,6 +2905,10 @@
                     "description": "Internal name of the table calculation",
                     "type": "string"
                 },
+                "totalMode": {
+                    "$ref": "#/$defs/TableCalculationTotalMode",
+                    "description": "How column totals are computed for this calculation"
+                },
                 "type": {
                     "$ref": "#/$defs/TableCalculationType",
                     "description": "Data type of the calculation result"
@@ -3110,6 +3118,10 @@
         },
         "TableCalculationTemplateType.WINDOW_FUNCTION": {
             "enum": ["window_function"],
+            "type": "string"
+        },
+        "TableCalculationTotalMode": {
+            "enum": ["formula", "sum_of_rows", "none"],
             "type": "string"
         },
         "TableCalculationType": {

@@ -168,9 +168,12 @@ import {
     claudeCodeOtelAllowedHosts,
 } from './claudeCodeOtelEnv';
 import {
+    addClaudeGenerationAttempt,
     addClaudeUsage,
     ClaudeStreamProcessor,
+    ZERO_CLAUDE_GENERATION_TELEMETRY,
     ZERO_CLAUDE_USAGE,
+    type ClaudeGenerationTelemetry,
     type ClaudeGenerationUsage,
 } from './ClaudeStreamProcessor';
 import {
@@ -255,6 +258,25 @@ type GenerateAppOptions = {
 type GenerateAppResult = {
     appUuid: string;
     version: number;
+};
+
+type DataAppVersionFailureTelemetry = {
+    wasResumed?: boolean;
+    claudeProvider?: 'anthropic' | 'bedrock';
+    schedulerWaitMs?: number;
+    generationUsage?: ClaudeGenerationUsage;
+    generationAttemptCount?: number;
+    toolCallCount?: number;
+    timeToFirstTokenMs?: number | null;
+    slowestTurnMs?: number;
+    buildFixGenerationMs?: number;
+};
+
+type DataAppBuildFixTelemetry = {
+    usage: ClaudeGenerationUsage;
+    buildMs: number;
+    fixAttempts: number;
+    fixGenerationMs: number;
 };
 
 // Wall-clock heartbeat to bump status_updated_at while the pipeline is
@@ -968,6 +990,17 @@ export class AppGenerateService extends BaseService {
     }
 
     /**
+     * Reasoning-effort policy for the claude CLI: first builds run low —
+     * benchmarked ~40% faster with no quality-gate regressions — while
+     * iterations run high (the CLI default, now passed explicitly), since
+     * they make targeted edits to existing code where deeper reasoning
+     * matters more than blank-page latency.
+     */
+    private static resolveClaudeEffort(version: number): 'low' | 'high' {
+        return version === 1 ? 'low' : 'high';
+    }
+
+    /**
      * Read the first few bytes of a stream, validate image magic bytes,
      * then return a new Readable that replays those bytes followed by
      * the rest of the original stream.
@@ -1223,11 +1256,9 @@ export class AppGenerateService extends BaseService {
         await this.assertDataAppsEnabled(user);
 
         const app = await this.appModel.getApp(appUuid, projectUuid);
-        await this.assertCanManageApp(
-            user,
-            app,
-            'Insufficient permissions to view app thumbnail',
-        );
+        // Viewing a thumbnail is a read: anyone who can view the app can see it
+        // (e.g. on a project homepage), not just those who can manage it.
+        await this.assertCanViewApp(user, app);
 
         const { client: s3Client, bucket } = this.getS3Client();
         const key = AppGenerateService.appThumbnailKey(appUuid);
@@ -1308,8 +1339,49 @@ export class AppGenerateService extends BaseService {
     trackTimeoutFailure(
         payload: AppGeneratePipelineJobPayload,
         error: unknown,
+        schedulerWaitMs?: number,
     ): void {
-        this.trackVersionFailed(payload, 'timeout', error, {}, null, 0);
+        this.trackVersionFailed(payload, 'timeout', error, {}, null, 0, {
+            schedulerWaitMs,
+        });
+    }
+
+    private static emitDataAppAiUsage(
+        payload: AppGeneratePipelineJobPayload,
+        model: DataAppClaudeModel,
+        provider: 'anthropic' | 'bedrock',
+        usage: ClaudeGenerationUsage,
+    ): void {
+        emitAiUsage(
+            getAiCallTelemetry({
+                functionId: 'appClaudeGeneration',
+                feature: 'data-app',
+                organizationUuid: payload.organizationUuid,
+                projectUuid: payload.projectUuid,
+                userUuid: payload.userUuid,
+                model,
+                provider,
+                extra: {
+                    appUuid: payload.appUuid,
+                    appVersion: payload.version,
+                },
+            }),
+            {
+                inputTokens:
+                    usage.inputTokens +
+                    usage.cacheReadInputTokens +
+                    usage.cacheCreationInputTokens,
+                outputTokens: usage.outputTokens,
+                cacheReadTokens: usage.cacheReadInputTokens,
+                cacheWriteTokens: usage.cacheCreationInputTokens,
+                reasoningTokens: null,
+                totalTokens:
+                    usage.inputTokens +
+                    usage.cacheReadInputTokens +
+                    usage.cacheCreationInputTokens +
+                    usage.outputTokens,
+            },
+        );
     }
 
     private trackVersionFailed(
@@ -1327,7 +1399,29 @@ export class AppGenerateService extends BaseService {
         durations: Record<string, number>,
         overallStart: number | null,
         buildFixAttempts: number,
+        telemetry: DataAppVersionFailureTelemetry = {},
     ): void {
+        const { generationUsage } = telemetry;
+        const claudeModel =
+            payload.claudeModel ?? DEFAULT_DATA_APP_CLAUDE_MODEL;
+
+        if (
+            generationUsage &&
+            (generationUsage.inputTokens > 0 ||
+                generationUsage.outputTokens > 0 ||
+                generationUsage.cacheReadInputTokens > 0 ||
+                generationUsage.cacheCreationInputTokens > 0 ||
+                generationUsage.numTurns > 0 ||
+                generationUsage.costUsd > 0)
+        ) {
+            AppGenerateService.emitDataAppAiUsage(
+                payload,
+                claudeModel,
+                telemetry.claudeProvider ?? 'anthropic',
+                generationUsage,
+            );
+        }
+
         this.analytics.track({
             event: 'data_app.version.failed',
             userId: payload.userUuid,
@@ -1337,24 +1431,45 @@ export class AppGenerateService extends BaseService {
                 appUuid: payload.appUuid,
                 version: payload.version,
                 isIteration: payload.isIteration,
-                claudeModel:
-                    payload.claudeModel ?? DEFAULT_DATA_APP_CLAUDE_MODEL,
+                claudeModel,
+                claudeProvider: telemetry.claudeProvider,
+                schedulerWaitMs: telemetry.schedulerWaitMs,
+                claudeEffort: AppGenerateService.resolveClaudeEffort(
+                    payload.version,
+                ),
                 failureStage,
                 errorMessage: AppGenerateService.truncateEnd(
                     getErrorMessage(error),
                     500,
                 ),
                 buildFixAttempts,
+                buildFixGenerationMs: telemetry.buildFixGenerationMs,
                 totalDurationMs:
                     overallStart !== null
                         ? AppGenerateService.elapsed(overallStart)
                         : 0,
+                wasResumed: telemetry.wasResumed,
                 sandboxMs: durations.sandboxMs,
                 resumeMs: durations.resumeMs,
                 restoreMs: durations.restoreMs,
                 catalogMs: durations.catalogMs,
                 generateMs: durations.generateMs,
                 buildMs: durations.buildMs,
+                metadataMs: durations.metadataMs,
+                packageMs: durations.packageMs,
+                uploadMs: durations.uploadMs,
+                toolCallCount: telemetry.toolCallCount,
+                inputTokens: generationUsage?.inputTokens,
+                outputTokens: generationUsage?.outputTokens,
+                cacheReadInputTokens: generationUsage?.cacheReadInputTokens,
+                cacheCreationInputTokens:
+                    generationUsage?.cacheCreationInputTokens,
+                numTurns: generationUsage?.numTurns,
+                durationApiMs: generationUsage?.durationApiMs,
+                totalCostUsd: generationUsage?.costUsd,
+                generationAttemptCount: telemetry.generationAttemptCount,
+                timeToFirstTokenMs: telemetry.timeToFirstTokenMs,
+                slowestTurnMs: telemetry.slowestTurnMs,
             },
         });
     }
@@ -2270,16 +2385,19 @@ export class AppGenerateService extends BaseService {
         // failure) and emits the parsed object on the result event. `null`
         // for runs that don't collect a structured schema (metadata, builds).
         structuredOutputSchema: string | null,
+        onTelemetry?: (telemetry: ClaudeGenerationTelemetry) => void,
     ): Promise<{
         durationMs: number;
         responseText: string | null;
         structuredOutput: unknown;
         toolCallCount: number;
-        usage: ClaudeGenerationUsage | null;
+        usage: ClaudeGenerationUsage;
         timeToFirstTokenMs: number | null;
         turnDurationsMs: number[];
+        generationAttemptCount: number;
     }> {
         const start = performance.now();
+        let telemetry = ZERO_CLAUDE_GENERATION_TELEMETRY;
 
         if (structuredOutputSchema) {
             // A resumed sandbox may still hold a root-owned
@@ -2301,6 +2419,10 @@ export class AppGenerateService extends BaseService {
             ? '--json-schema "$(cat /tmp/output-schema.json)" '
             : '';
 
+        const effortFlag = `--effort ${AppGenerateService.resolveClaudeEffort(
+            version,
+        )} `;
+
         // When the sandbox was resumed from a previous iteration, use
         // --continue so Claude has the full conversation history of what
         // it built before. For fresh sandboxes, start a new session.
@@ -2318,10 +2440,12 @@ export class AppGenerateService extends BaseService {
             responseText: string | null;
             structuredOutput: unknown;
             toolCallCount: number;
-            usage: ClaudeGenerationUsage | null;
+            usage: ClaudeGenerationUsage;
             timeToFirstTokenMs: number | null;
             turnDurationsMs: number[];
+            generationAttemptCount: number;
         }> => {
+            const attemptStartedAfterMs = AppGenerateService.elapsed(start);
             const sessionFlags =
                 continueSession || forceContinue ? '--continue -p' : '-p';
             const processor = new ClaudeStreamProcessor();
@@ -2332,7 +2456,7 @@ export class AppGenerateService extends BaseService {
             const result = await sandbox.commands
                 .run(
                     `cat /tmp/prompt.txt | claude ${sessionFlags} ` +
-                        `--model ${claudeModel} ` +
+                        `--model ${claudeModel} ${effortFlag}` +
                         `--verbose --output-format stream-json --include-partial-messages ` +
                         `--allowedTools "Read(//app/**),Read(//tmp/dbt-repo/**),Read(//tmp/images/**),Read(//tmp/metric-queries/**),Read(//tmp/external-data/**),Write(//app/src/**),Edit(//app/src/**),Glob(//app/**),Glob(//tmp/dbt-repo/**),Glob(//tmp/metric-queries/**),Glob(//tmp/external-data/**),Grep(//app/**),Grep(//tmp/dbt-repo/**),Grep(//tmp/external-data/**)" ` +
                         `${jsonSchemaFlag}--append-system-prompt-file ${AppGenerateService.EFFECTIVE_SKILL_PATH}`,
@@ -2419,9 +2543,22 @@ export class AppGenerateService extends BaseService {
             const toolCallCount = processor.totalToolCalls;
             const usage = processor.lastUsage;
             const { timeToFirstTokenMs, turnDurationsMs } = processor;
+            telemetry = addClaudeGenerationAttempt(
+                telemetry,
+                {
+                    usage,
+                    toolCallCount,
+                    timeToFirstTokenMs,
+                    turnDurationsMs,
+                },
+                attemptStartedAfterMs,
+            );
+            onTelemetry?.(telemetry);
             const durationMs = AppGenerateService.elapsed(start);
             this.logger.info(
-                `App ${appUuid}: Claude code generation completed (model=${claudeModel}, exit=${result.exitCode}, toolCalls=${toolCallCount}, turns=${usage?.numTurns ?? 0}, outputTokens=${usage?.outputTokens ?? 0}, cacheReadTokens=${usage?.cacheReadInputTokens ?? 0}, ${durationMs}ms, attempt ${attempt}/${AppGenerateService.MAX_GENERATION_ATTEMPTS})`,
+                `App ${appUuid}: Claude code generation completed (model=${claudeModel}, effort=${AppGenerateService.resolveClaudeEffort(
+                    version,
+                )}, exit=${result.exitCode}, toolCalls=${toolCallCount}, turns=${usage?.numTurns ?? 0}, outputTokens=${usage?.outputTokens ?? 0}, cacheReadTokens=${usage?.cacheReadInputTokens ?? 0}, ${durationMs}ms, attempt ${attempt}/${AppGenerateService.MAX_GENERATION_ATTEMPTS})`,
             );
             this.logger.info(
                 `App ${appUuid}: claude turn timeline (ttft=${timeToFirstTokenMs ?? 'n/a'}ms, turnsMs=[${turnDurationsMs.join(', ')}])`,
@@ -2437,10 +2574,11 @@ export class AppGenerateService extends BaseService {
                     durationMs,
                     responseText,
                     structuredOutput,
-                    toolCallCount,
-                    usage,
-                    timeToFirstTokenMs,
-                    turnDurationsMs,
+                    toolCallCount: telemetry.toolCallCount,
+                    usage: telemetry.usage,
+                    timeToFirstTokenMs: telemetry.timeToFirstTokenMs,
+                    turnDurationsMs: telemetry.turnDurationsMs,
+                    generationAttemptCount: telemetry.attemptCount,
                 };
             }
 
@@ -2534,12 +2672,13 @@ export class AppGenerateService extends BaseService {
         version: number,
         claudeCodeEnv: Record<string, string>,
         claudeModel: DataAppClaudeModel,
+        onTelemetry?: (telemetry: ClaudeGenerationTelemetry) => void,
     ): Promise<{
-        name: string;
+        name: string | null;
         description: string;
         durationMs: number;
-        usage: ClaudeGenerationUsage | null;
-    } | null> {
+        usage: ClaudeGenerationUsage;
+    }> {
         const start = performance.now();
         const metadataPrompt =
             'Respond with ONLY a JSON object (no markdown, no explanation) ' +
@@ -2560,6 +2699,7 @@ export class AppGenerateService extends BaseService {
             claudeCodeEnv,
             claudeModel,
             null, // metadata run collects no structured schema
+            onTelemetry,
         );
 
         const durationMs = AppGenerateService.elapsed(start);
@@ -2568,7 +2708,12 @@ export class AppGenerateService extends BaseService {
             this.logger.warn(
                 `App ${appUuid}: metadata generation returned no text`,
             );
-            return null;
+            return {
+                name: null,
+                description: '',
+                durationMs,
+                usage: generation.usage,
+            };
         }
 
         // Extract JSON from the response (Claude may wrap it in markdown code fences)
@@ -2577,7 +2722,12 @@ export class AppGenerateService extends BaseService {
             this.logger.warn(
                 `App ${appUuid}: could not find JSON in metadata response`,
             );
-            return null;
+            return {
+                name: null,
+                description: '',
+                durationMs,
+                usage: generation.usage,
+            };
         }
 
         try {
@@ -2595,7 +2745,12 @@ export class AppGenerateService extends BaseService {
                 this.logger.warn(
                     `App ${appUuid}: metadata missing "name" field`,
                 );
-                return null;
+                return {
+                    name: null,
+                    description: description ?? '',
+                    durationMs,
+                    usage: generation.usage,
+                };
             }
             return {
                 name,
@@ -2610,7 +2765,12 @@ export class AppGenerateService extends BaseService {
             this.logger.warn(
                 `App ${appUuid}: failed to parse metadata JSON: ${safeLog}`,
             );
-            return null;
+            return {
+                name: null,
+                description: '',
+                durationMs,
+                usage: generation.usage,
+            };
         }
     }
 
@@ -2686,6 +2846,7 @@ export class AppGenerateService extends BaseService {
         version: number,
         claudeCodeEnv: Record<string, string>,
         claudeModel: DataAppClaudeModel,
+        onTelemetry?: (telemetry: DataAppBuildFixTelemetry) => void,
     ): Promise<{
         buildMs: number;
         fixAttempts: number;
@@ -2718,6 +2879,12 @@ export class AppGenerateService extends BaseService {
             // to decide whether to keep retrying.
             /* eslint-disable no-await-in-loop */
             fixAttempts += 1;
+            onTelemetry?.({
+                usage: fixUsage,
+                buildMs,
+                fixAttempts,
+                fixGenerationMs,
+            });
 
             const isBuildError = lastResult.exitCode !== 0;
 
@@ -2768,6 +2935,11 @@ export class AppGenerateService extends BaseService {
             );
             await sandbox.files.write('/tmp/prompt.txt', `${fixPrompt}\n`);
 
+            const fixStart = performance.now();
+            const fixUsageBeforeAttempt = fixUsage;
+            const buildMsBeforeAttempt = buildMs;
+            const currentFixAttempt = fixAttempts;
+            const fixGenerationMsBeforeAttempt = fixGenerationMs;
             const generation = await this.runClaudeGeneration(
                 sandbox,
                 appUuid,
@@ -2776,6 +2948,19 @@ export class AppGenerateService extends BaseService {
                 claudeCodeEnv,
                 claudeModel,
                 null, // build-fix run collects no structured schema
+                (telemetry) => {
+                    onTelemetry?.({
+                        usage: addClaudeUsage(
+                            fixUsageBeforeAttempt,
+                            telemetry.usage,
+                        ),
+                        buildMs: buildMsBeforeAttempt,
+                        fixAttempts: currentFixAttempt,
+                        fixGenerationMs:
+                            fixGenerationMsBeforeAttempt +
+                            AppGenerateService.elapsed(fixStart),
+                    });
+                },
             );
             fixGenerationMs += generation.durationMs;
             fixUsage = addClaudeUsage(fixUsage, generation.usage);
@@ -2794,6 +2979,12 @@ export class AppGenerateService extends BaseService {
 
             lastResult = await this.runBuild(sandbox, appUuid);
             buildMs += lastResult.durationMs;
+            onTelemetry?.({
+                usage: fixUsage,
+                buildMs,
+                fixAttempts,
+                fixGenerationMs,
+            });
             blankAppProblem =
                 lastResult.exitCode === 0
                     ? await this.detectBlankApp(sandbox, appUuid)
@@ -2989,7 +3180,10 @@ export class AppGenerateService extends BaseService {
      * On retry after pod death, reads current status from DB and skips
      * completed stages. `claude --continue` resumes the conversation.
      */
-    async runPipeline(payload: AppGeneratePipelineJobPayload): Promise<void> {
+    async runPipeline(
+        payload: AppGeneratePipelineJobPayload,
+        schedulerWaitMs: number,
+    ): Promise<void> {
         const {
             appUuid,
             version,
@@ -3037,7 +3231,9 @@ export class AppGenerateService extends BaseService {
                 userMessage,
             );
             if (marked) {
-                this.trackVersionFailed(payload, 'config', error, {}, null, 0);
+                this.trackVersionFailed(payload, 'config', error, {}, null, 0, {
+                    schedulerWaitMs,
+                });
             }
             return;
         }
@@ -3123,6 +3319,7 @@ export class AppGenerateService extends BaseService {
                         durations,
                         overallStart,
                         0,
+                        { schedulerWaitMs },
                     );
                 }
                 return;
@@ -3148,6 +3345,7 @@ export class AppGenerateService extends BaseService {
                         durations,
                         overallStart,
                         0,
+                        { schedulerWaitMs },
                     );
                 }
                 return;
@@ -3178,6 +3376,7 @@ export class AppGenerateService extends BaseService {
                         durations,
                         overallStart,
                         0,
+                        { schedulerWaitMs },
                     );
                 }
                 return;
@@ -3215,6 +3414,14 @@ export class AppGenerateService extends BaseService {
                         'organization.uuid': payload.organizationUuid,
                         'user.uuid': payload.userUuid,
                         'app.is_iteration': isIteration,
+                        'app.scheduler_wait_ms': schedulerWaitMs,
+                        'app.claude_model':
+                            payload.claudeModel ??
+                            DEFAULT_DATA_APP_CLAUDE_MODEL,
+                        'app.claude_provider':
+                            claudeCodeEnv.CLAUDE_CODE_USE_BEDROCK === '1'
+                                ? 'bedrock'
+                                : 'anthropic',
                         ...(process.env.LIGHTDASH_INSTALL_ID
                             ? { installId: process.env.LIGHTDASH_INSTALL_ID }
                             : {}),
@@ -3238,6 +3445,7 @@ export class AppGenerateService extends BaseService {
                         imageIds,
                         chartReferences,
                         versionDeps,
+                        schedulerWaitMs,
                     );
                 },
             );
@@ -3260,6 +3468,7 @@ export class AppGenerateService extends BaseService {
         imageIds: string[] | undefined,
         chartReferences: ChartReference[] | undefined,
         versionDeps: AppVersionDependencies | null,
+        schedulerWaitMs: number,
     ): Promise<void> {
         const { appUuid, version, projectUuid, prompt, template } = payload;
         // Drives the data-app-viz prompt instructions + schema collection.
@@ -3273,6 +3482,10 @@ export class AppGenerateService extends BaseService {
         // to the default so we never run with `--model undefined`.
         const claudeModel: DataAppClaudeModel =
             payload.claudeModel ?? DEFAULT_DATA_APP_CLAUDE_MODEL;
+        const claudeProvider: 'anthropic' | 'bedrock' =
+            claudeCodeEnv.CLAUDE_CODE_USE_BEDROCK === '1'
+                ? 'bedrock'
+                : 'anthropic';
         const durations: Record<string, number> = { ...extraDurations };
         const shouldRun = (stage: AppVersionStatus) =>
             AppGenerateService.shouldRunStage(currentStatus, stage);
@@ -3299,12 +3512,24 @@ export class AppGenerateService extends BaseService {
                 this.logger.warn(
                     `App ${appUuid}: theme ${payload.designUuid} exceeds the size cap at build time (${violation.bytes} > ${violation.limit} bytes); failing fast — ${message}`,
                 );
-                await this.markError(
+                const themeError = new Error(message);
+                const marked = await this.markError(
                     appUuid,
                     version,
-                    new Error(message),
+                    themeError,
                     message,
                 );
+                if (marked) {
+                    this.trackVersionFailed(
+                        payload,
+                        'config',
+                        themeError,
+                        durations,
+                        overallStart,
+                        0,
+                        { wasResumed, claudeProvider, schedulerWaitMs },
+                    );
+                }
                 return;
             }
         }
@@ -3340,6 +3565,33 @@ export class AppGenerateService extends BaseService {
         // sum across the build-fix and metadata calls).
         let timeToFirstTokenMs: number | null = null;
         let slowestTurnMs = 0;
+        let generationAttemptCount = 0;
+        const captureMainGenerationTelemetry = (
+            telemetry: ClaudeGenerationTelemetry,
+        ) => {
+            generationUsage = telemetry.usage;
+            toolCallCount = telemetry.toolCallCount;
+            timeToFirstTokenMs = telemetry.timeToFirstTokenMs;
+            slowestTurnMs = telemetry.turnDurationsMs.length
+                ? Math.max(...telemetry.turnDurationsMs)
+                : 0;
+            generationAttemptCount = telemetry.attemptCount;
+        };
+        const failureTelemetry = (): DataAppVersionFailureTelemetry => ({
+            wasResumed,
+            claudeProvider,
+            schedulerWaitMs,
+            buildFixGenerationMs,
+            ...(generationAttemptCount > 0
+                ? {
+                      generationUsage,
+                      generationAttemptCount,
+                      toolCallCount,
+                      timeToFirstTokenMs,
+                      slowestTurnMs,
+                  }
+                : {}),
+        });
 
         // --- Stage: catalog ---
         if (shouldRun('catalog')) {
@@ -3391,6 +3643,7 @@ export class AppGenerateService extends BaseService {
                         durations,
                         overallStart,
                         buildFixAttempts,
+                        failureTelemetry(),
                     );
                 }
                 return;
@@ -3404,6 +3657,7 @@ export class AppGenerateService extends BaseService {
         // generating stage is skipped on a resumed build).
         let vizStructuredOutput: unknown = null;
         if (shouldRun('generating')) {
+            const generationStart = performance.now();
             try {
                 const advanced = await this.advanceStage(
                     appUuid,
@@ -3429,20 +3683,22 @@ export class AppGenerateService extends BaseService {
                     // Data app vizs collect a validated schema as the run's
                     // structured output; other apps don't declare one.
                     isDataAppViz ? JSON.stringify(dataAppVizJsonSchema) : null,
+                    captureMainGenerationTelemetry,
                 );
                 durations.generateMs = generation.durationMs;
                 responseText = generation.responseText;
                 vizStructuredOutput = generation.structuredOutput;
                 toolCallCount = generation.toolCallCount;
-                generationUsage = addClaudeUsage(
-                    generationUsage,
-                    generation.usage,
-                );
+                generationUsage = generation.usage;
                 timeToFirstTokenMs = generation.timeToFirstTokenMs;
                 slowestTurnMs = generation.turnDurationsMs.length
                     ? Math.max(...generation.turnDurationsMs)
                     : 0;
+                generationAttemptCount = generation.generationAttemptCount;
             } catch (error) {
+                durations.generateMs =
+                    durations.generateMs ??
+                    AppGenerateService.elapsed(generationStart);
                 const totalMs = AppGenerateService.elapsed(overallStart);
                 this.logger.error(
                     `App ${appUuid}: generation failed after ${totalMs}ms: ${getErrorMessage(error)}`,
@@ -3476,6 +3732,7 @@ export class AppGenerateService extends BaseService {
                         durations,
                         overallStart,
                         buildFixAttempts,
+                        failureTelemetry(),
                     );
                 }
                 return;
@@ -3543,6 +3800,7 @@ export class AppGenerateService extends BaseService {
                                 durations,
                                 overallStart,
                                 buildFixAttempts,
+                                failureTelemetry(),
                             );
                         }
                         return;
@@ -3560,18 +3818,28 @@ export class AppGenerateService extends BaseService {
                     }
                 }
 
+                const usageBeforeBuildFix = generationUsage;
                 const buildResult = await this.runBuildWithAutoFix(
                     sandbox,
                     appUuid,
                     version,
                     claudeCodeEnv,
                     claudeModel,
+                    (telemetry) => {
+                        durations.buildMs = telemetry.buildMs;
+                        buildFixAttempts = telemetry.fixAttempts;
+                        buildFixGenerationMs = telemetry.fixGenerationMs;
+                        generationUsage = addClaudeUsage(
+                            usageBeforeBuildFix,
+                            telemetry.usage,
+                        );
+                    },
                 );
                 durations.buildMs = buildResult.buildMs;
                 buildFixAttempts = buildResult.fixAttempts;
                 buildFixGenerationMs = buildResult.fixGenerationMs;
                 generationUsage = addClaudeUsage(
-                    generationUsage,
+                    usageBeforeBuildFix,
                     buildResult.fixUsage,
                 );
                 if (buildResult.fixAttempts > 0) {
@@ -3597,6 +3865,7 @@ export class AppGenerateService extends BaseService {
                         durations,
                         overallStart,
                         buildFixAttempts,
+                        failureTelemetry(),
                     );
                 }
                 return;
@@ -3605,6 +3874,8 @@ export class AppGenerateService extends BaseService {
 
         // --- Auto-name: first version only ---
         if (version === 1) {
+            const metadataStart = performance.now();
+            let metadataUsage = ZERO_CLAUDE_USAGE;
             try {
                 const metadata = await this.generateAppMetadata(
                     sandbox,
@@ -3612,8 +3883,16 @@ export class AppGenerateService extends BaseService {
                     version,
                     claudeCodeEnv,
                     claudeModel,
+                    (telemetry) => {
+                        metadataUsage = telemetry.usage;
+                    },
                 );
-                if (metadata) {
+                durations.metadataMs = metadata.durationMs;
+                generationUsage = addClaudeUsage(
+                    generationUsage,
+                    metadata.usage,
+                );
+                if (metadata.name) {
                     // Only fills fields the user hasn't already set — the
                     // build is async, so by the time we get here the user
                     // may have renamed the app themselves.
@@ -3628,13 +3907,14 @@ export class AppGenerateService extends BaseService {
                     this.logger.info(
                         `App ${appUuid}: auto-named "${metadata.name}"`,
                     );
-                    durations.metadataMs = metadata.durationMs;
-                    generationUsage = addClaudeUsage(
-                        generationUsage,
-                        metadata.usage,
-                    );
                 }
             } catch (error) {
+                durations.metadataMs =
+                    AppGenerateService.elapsed(metadataStart);
+                generationUsage = addClaudeUsage(
+                    generationUsage,
+                    metadataUsage,
+                );
                 // Non-fatal — the app works fine without a name
                 this.logger.warn(
                     `App ${appUuid}: failed to auto-generate name: ${getErrorMessage(error)}`,
@@ -3686,6 +3966,7 @@ export class AppGenerateService extends BaseService {
                         durations,
                         overallStart,
                         buildFixAttempts,
+                        failureTelemetry(),
                     );
                 }
                 return;
@@ -3732,6 +4013,7 @@ export class AppGenerateService extends BaseService {
                     durations,
                     overallStart,
                     buildFixAttempts,
+                    failureTelemetry(),
                 );
             }
             return;
@@ -3745,39 +4027,17 @@ export class AppGenerateService extends BaseService {
                 .map(([k, v]) => `${k}=${v}ms`)
                 .join(
                     ', ',
-                )}, numTurns=${generationUsage.numTurns}, inputTokens=${generationUsage.inputTokens}, outputTokens=${generationUsage.outputTokens}, cacheReadTokens=${generationUsage.cacheReadInputTokens}, cacheCreationTokens=${generationUsage.cacheCreationInputTokens}, costUsd=${generationUsage.costUsd})`,
+                )}, generationAttempts=${generationAttemptCount}, numTurns=${generationUsage.numTurns}, inputTokens=${generationUsage.inputTokens}, outputTokens=${generationUsage.outputTokens}, cacheReadTokens=${generationUsage.cacheReadInputTokens}, cacheCreationTokens=${generationUsage.cacheCreationInputTokens}, costUsd=${generationUsage.costUsd})`,
         );
 
         // Aggregated across every `claude` CLI invocation in the pipeline. The
-        // CLI reports inputTokens excluding cache reads/writes, but AI-SDK rows
-        // store cache-inclusive inputTokens — normalize to SDK semantics here so
-        // `SUM(input_tokens)` (and cost) is comparable across every feature.
-        emitAiUsage(
-            getAiCallTelemetry({
-                functionId: 'appClaudeGeneration',
-                feature: 'data-app',
-                organizationUuid: payload.organizationUuid,
-                projectUuid,
-                userUuid: payload.userUuid,
-                model: claudeModel,
-                provider: 'anthropic',
-                extra: { appUuid },
-            }),
-            {
-                inputTokens:
-                    generationUsage.inputTokens +
-                    generationUsage.cacheReadInputTokens +
-                    generationUsage.cacheCreationInputTokens,
-                outputTokens: generationUsage.outputTokens,
-                cacheReadTokens: generationUsage.cacheReadInputTokens,
-                cacheWriteTokens: generationUsage.cacheCreationInputTokens,
-                reasoningTokens: null,
-                totalTokens:
-                    generationUsage.inputTokens +
-                    generationUsage.cacheReadInputTokens +
-                    generationUsage.cacheCreationInputTokens +
-                    generationUsage.outputTokens,
-            },
+        // helper normalizes CLI input-token semantics to the cache-inclusive AI
+        // usage stream and stamps the app/version onto the accompanying span.
+        AppGenerateService.emitDataAppAiUsage(
+            payload,
+            claudeModel,
+            claudeProvider,
+            generationUsage,
         );
 
         this.analytics.track({
@@ -3790,6 +4050,9 @@ export class AppGenerateService extends BaseService {
                 version,
                 isIteration: payload.isIteration,
                 claudeModel,
+                claudeProvider,
+                schedulerWaitMs,
+                claudeEffort: AppGenerateService.resolveClaudeEffort(version),
                 wasResumed,
                 totalDurationMs: totalMs,
                 sandboxMs: durations.sandboxMs,
@@ -3798,6 +4061,7 @@ export class AppGenerateService extends BaseService {
                 catalogMs: durations.catalogMs,
                 generateMs: durations.generateMs,
                 buildMs: durations.buildMs,
+                metadataMs: durations.metadataMs,
                 packageMs: durations.packageMs,
                 uploadMs: durations.uploadMs,
                 buildFixAttempts,
@@ -3811,7 +4075,8 @@ export class AppGenerateService extends BaseService {
                 numTurns: generationUsage.numTurns,
                 durationApiMs: generationUsage.durationApiMs,
                 totalCostUsd: generationUsage.costUsd,
-                timeToFirstTokenMs: timeToFirstTokenMs ?? 0,
+                generationAttemptCount,
+                timeToFirstTokenMs,
                 slowestTurnMs,
                 catalogTableCount: catalogStats.tableCount,
                 catalogDimensionCount: catalogStats.dimensionCount,
@@ -4545,6 +4810,7 @@ Each question, when asked, must be a single sentence, 5–15 words.`,
                 imageCount: imageIds.length,
                 template: template ?? null,
                 claudeModel,
+                claudeEffort: AppGenerateService.resolveClaudeEffort(version),
                 samplesRequested: sampleStats.requested,
                 samplesAvailable: sampleStats.available,
                 clarificationCount: clarifications?.length ?? 0,
@@ -4765,6 +5031,8 @@ Each question, when asked, must be a single sentence, 5–15 words.`,
                 promptLength: prompt.length,
                 imageCount: imageIds.length,
                 claudeModel,
+                claudeEffort:
+                    AppGenerateService.resolveClaudeEffort(newVersion),
                 themeChanged: isThemeChange,
                 designUuid: effectiveDesignUuid,
                 previousVersionStatus: latestVersion?.status ?? null,

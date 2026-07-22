@@ -35,13 +35,6 @@ export const AgentPageHeader: FC<Props> = ({
                         onClick={onShare}
                         loading={isSharing}
                         aria-label="Share thread"
-                        styles={(theme) => ({
-                            root: {
-                                borderColor: theme.colors.ldGray[2],
-                                boxShadow: `var(--mantine-shadow-subtle)`,
-                                color: theme.colors.ldGray[9],
-                            },
-                        })}
                     >
                         <MantineIcon icon={IconShare2} size={14} stroke={1.8} />
                     </ActionIcon>
@@ -57,17 +50,9 @@ export const AgentPageHeader: FC<Props> = ({
                             icon={IconWindowMinimize}
                             size={14}
                             stroke={1.8}
-                            style={{ transform: 'scaleX(-1)' }}
+                            className={styles.flippedIcon}
                         />
                     }
-                    styles={(theme) => ({
-                        root: {
-                            borderColor: theme.colors.ldGray[2],
-                            boxShadow: `var(--mantine-shadow-subtle)`,
-                            color: theme.colors.ldGray[9],
-                            fontSize: theme.fontSizes.xs,
-                        },
-                    })}
                 >
                     Minimize
                 </Button>
@@ -85,14 +70,6 @@ export const AgentPageHeader: FC<Props> = ({
                             stroke={1.8}
                         />
                     }
-                    styles={(theme) => ({
-                        root: {
-                            borderColor: theme.colors.ldGray[2],
-                            boxShadow: `var(--mantine-shadow-subtle)`,
-                            color: theme.colors.ldGray[9],
-                            fontSize: theme.fontSizes.xs,
-                        },
-                    })}
                 >
                     Settings
                 </Button>

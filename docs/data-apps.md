@@ -41,7 +41,10 @@ flowchart LR
 
 2. **Sandbox setup** — An [E2B](https://e2b.dev/) sandbox is created from the `lightdash-data-app` template (override
    with `E2B_TEMPLATE_NAME` for development). The template contains a pre-configured React + Vite project with the
-   Lightdash App SDK, plus a system prompt (`/app/skill.md`) that teaches Claude how to build data apps.
+   Lightdash App SDK, plus a system prompt (`/app/skill.md`) that teaches Claude how to build data apps. The skill
+   follows the progressive-disclosure pattern: a slim always-loaded core plus on-demand reference files under
+   `/app/references/*.md` (chart references, external APIs, attached images, element references, parameters, Sheets
+   export, PDF downloads, themes, resizable panels, drilldown, D3) that Claude Reads only when the build needs them.
 
 3. **Catalog injection** — The project's compiled explores (tables, dimensions, metrics, joins, parameters, and AI
    hints) are fetched from the project cache and written as YAML into the sandbox at
@@ -191,10 +194,37 @@ How it flows through the stack:
 
 The shared enum + default live in `packages/common/src/ee/apps/types.ts` (`DATA_APP_CLAUDE_MODELS`, `DataAppClaudeModel`, `DEFAULT_DATA_APP_CLAUDE_MODEL`) so the frontend picker, the request body, and the backend validation stay in sync.
 
+Reasoning effort follows the version, not the user: first builds (`version === 1`) run `--effort low` — benchmarked ~40% faster with no regressions on the build/render/query-validity gates — while iterations (v2+) run `--effort high` (the CLI default, passed explicitly), since they make targeted edits to existing code where deeper reasoning matters more than blank-page latency. The resolved level is tracked as `claudeEffort` on the data-app analytics events. The benchmark harness behind that decision lives in `sandboxes/data-apps/benchmark/`.
+
 ### Cancellation
 
 Users can cancel a building version. This atomically marks it as `status='error'` in the database and pauses the sandbox
 (interrupting any running commands). The sandbox remains resumable for subsequent iterations.
+
+### Analytics and generation telemetry
+
+Data App analytics use the app version as the user-facing turn identifier: version 1 is turn 1, version 2 is turn 2,
+and so on. This is distinct from Claude's internal `numTurns`, which counts assistant/tool loops inside the generation.
+
+- `data_app.created` and `data_app.iterated` carry the version plus prompt/workload context (model, prompt and image
+  size, samples, template/clarifications on creation, and theme/design context on iteration).
+- `data_app.version.completed` carries end-to-end and stage durations (`sandboxMs`, `resumeMs`, `restoreMs`, `catalogMs`,
+  `generateMs`, `buildMs`, `metadataMs`, `packageMs`, and `uploadMs`) plus the resolved Claude provider, artifact/catalog
+  sizes, and build-fix counts. `schedulerWaitMs` separately measures how long the Graphile job waited after its scheduled
+  run time before a worker began processing it.
+- Claude usage on a completed version is aggregated across main generation, CLI retries, build-fix calls, and v1 metadata
+  generation. It includes uncached/cache-read/cache-write input tokens, output tokens, internal turns, API duration, cost,
+  main-generation attempt count, time to first token, and the slowest internal turn.
+- `data_app.version.failed` carries the completed stage timings and, when Claude had started, the partial token/cost/turn
+  telemetry incurred before failure. That usage is also emitted to the shared `ai.usage` stream so failed builds are not
+  omitted from spend accounting. Pre-generation failures leave Claude fields absent instead of reporting false zeroes.
+- `data_app.version.cancelled` records the stage and elapsed time at cancellation. It cannot include in-memory Claude
+  usage because cancellation is handled by a separate request while the worker is being interrupted.
+
+The pipeline also creates a `DataApp.generate` OpenTelemetry parent span tagged with app UUID, version, project,
+organization, user, iteration status, scheduler wait, model, and provider. Claude Code request/tool spans nest underneath
+it. Analytics events are the stable source for product dashboards; the OTEL waterfall is the deeper operational view and
+is queried in the configured GCP telemetry backend.
 
 ### Refreshing the preview
 
@@ -214,6 +244,56 @@ boolean to `true` on the first refresh and forwards it through `AppIframePreview
 so the initial page load can still serve cached results fast; once you've asked for a refresh, every subsequent query
 runs against the warehouse fresh. (This mirrors the sticky behaviour of the dashboard tile below.)
 
+### Shareable URL state
+
+A data app's own interactive controls (period selectors, tabs, global filters) can round-trip their state through the
+**host page's URL**, so the address bar is always a shareable link to the current view: a colleague opening the link
+lands on the app with the same in-app state applied. Tracked in
+[PROD-8151](https://linear.app/lightdash/issue/PROD-8151).
+
+State is a single keyed map — each control owns a key with a JSON-serializable value, ≤ 4 KB serialized for the whole
+map — carried in one `?state=` query param on the host page. Two directions, no backend involvement:
+
+- **Seed (URL → app).** The validated `?state=` param is appended to the iframe hash
+  (`#transport=postMessage&projectUuid=…&state=<encoded>`). The SDK reads it synchronously at boot, so the app's
+  initial render and queries already use the seeded state — no flash of default state, no handshake race. The
+  appended value is re-latched **only when the iframe `src` changes for other reasons** (manual refresh, a new build
+  version, a token refetch), so reloads keep the current view without state changes reloading the app on every click.
+- **Write-back (app → URL).** The SDK's `useUrlState(key, default)` hook posts a `lightdash:sdk:url-state-change`
+  message to the parent immediately — the host must always hold the latest state so reloads can re-seed it.
+  `useAppSdkBridge` validates the payload (plain object, under the size cap; rejections log a console warning) and
+  the host updates in memory at once, debouncing only the `history.replaceState` URL write.
+
+State is **tagged with the app it came from**: when the builder switches preview apps, the previous app's state
+neither seeds the new app nor lingers in the page URL.
+
+The pre-installed template filter context (`lib/filters.tsx`, `useGlobalFilters`) stores its filters in
+`useUrlState('globalFilters')`, so **global filter selections are shareable with no effort from the generation agent**.
+Seeded values come from a user-editable URL and are treated as untrusted: the SDK drops non-object garbage at the map
+level, the filter provider sanitizes each filter's shape so malformed entries can't fail every query for an explore,
+and the skill instructs generated apps to validate individual values before use.
+
+Host opt-in is a single `urlStateSync` flag on `AppIframePreview`, which owns both halves internally via the
+`useAppUrlStateSync` hook — a host can't accidentally wire write-back without seeding or vice versa:
+
+| Host | URL state | Notes |
+| --- | --- | --- |
+| `AppPreviewTest` (`/view` routes) | ✓ | Primary share surface |
+| `AppGenerate` (builder) | ✓ | Authors can test shareable links |
+| `EmbedApp` (full-page embed) | ✓ | The embed page's own URL carries `?state=` |
+| Dashboard tiles, `MinimalApp`, viz renderer | ✗ | Tiles need per-tile key namespacing (multiple apps share one URL) — out of scope for now |
+
+Compatibility: old bundles never read the hash param or post the message — hosts' changes are inert for them. New
+bundles in non-opted hosts get in-memory state only (the change message is ignored). Existing apps pick up the
+auto-persisted global filters only after an iteration in a **fresh** sandbox with the current template *and* only if
+their restored source's `lib/filters.tsx` is updated — template files live in the app's own `src/` tree and are
+restored as-is from the source tarball.
+
+Key files: `packages/query-sdk/src/urlState.ts` (SDK side),
+`packages/frontend/src/features/apps/hooks/useAppUrlStateSync.ts` (host side),
+`sandboxes/data-apps/template/src/lib/filters.tsx` (global-filter persistence). Keep the "Shareable URL state" section
+of `sandboxes/data-apps/template/skill.md` in sync with this one.
+
 ### Manual app thumbnails
 
 The builder's Screenshot button uses the iframe-side screenshot handler (`screenshotHandler.js`) to rasterize the current
@@ -221,17 +301,28 @@ preview. In addition to attaching that PNG to the next prompt as a screenshot re
 it as the app thumbnail. The builder's header overflow menu also carries a **Capture thumbnail** action that runs the same
 capture but only saves the thumbnail — nothing is attached to the chat. It's disabled until the iframe announces
 screenshot capability, and hidden in the viewer (`AppPreviewTest`), which passes `captureThumbnail={null}` to
-`AppHeaderActions`.
+`AppHeaderActions`. Alongside it sits a **Remove thumbnail** action (same builder-only gating, enabled only when a
+thumbnail exists) that deletes the stored object — the escape hatch when a captured screenshot shows live data that
+shouldn't stay in the thumbnail.
 
 Storage is intentionally simple and app-scoped: the latest manual screenshot overwrites
 `apps/{appUuid}/thumbnail.png` in the app runtime S3 bucket. There is no DB row or per-version history; the object key is
 the metadata convention. The backend exposes signed-url (`GET`) and idempotent delete (`DELETE`) endpoints for that
 optional object, and the My Apps settings table lazy-loads it on name hover to show a preview when a thumbnail exists.
 
-Because the key is app-scoped, the thumbnail automatically travels with the app when it moves between spaces. The move
-flow (`MoveAppToSpaceModal`, shared by the app header menu, space chip, My Apps list, and browse table) therefore offers
-an **Include app thumbnail** checkbox — shown only when a thumbnail exists, on by default. Unchecking it deletes the
-thumbnail after a successful move, so a stale or sensitive screenshot isn't shared with the space.
+Because the key is app-scoped, an existing thumbnail automatically travels with the app when it moves between spaces.
+The move flow (`MoveAppToSpaceModal`, shared by the app header menu, space chip, My Apps list, and browse table)
+additionally offers a capture checkbox in the modal footer, checked by default: labelled **Include app thumbnail** when
+the app has none, or **Replace app thumbnail** when one already exists (the label — not the default — is what signals
+the overwrite; a default derived from the async thumbnail check would flip the checkbox under the user). When checked, the modal captures
+a fresh screenshot of the app **before the move** and uploads it as the thumbnail. The capture source depends on the
+surface: pages with a live preview (builder, viewer — including via their space chip) pass the iframe's
+`captureScreenshot` handle into the modal, so the thumbnail shows the app **exactly as the user sees it**, interactive
+state (selected metrics, filters) included. Surfaces without a live preview (browse table, My Apps) fall back to an
+invisible `AppIframePreview` of the latest ready version, which renders the app's **default** state — the container is
+in-viewport at `opacity: 0` (never `display: none` or offscreen), so the app still renders, animation frames run, and
+IntersectionObserver-driven content loads. The checkbox is disabled when the app has no ready version; if the app's
+template predates the screenshot handler, the capture times out and the move proceeds with a warning toast.
 
 ### Refreshing a data app inside a dashboard
 
@@ -713,7 +804,7 @@ with wording chosen from the filename:
 - **Attachment** → `[Design reference image N at /tmp/images/<uuid>.<ext> — use the Read tool to view it]`
 - **Screenshot** → `[Screenshot of the current app at /tmp/images/screenshot-<uuid>.<ext> — use the Read tool to view it. This is what the user is looking at right now, not a design to reproduce.]`
 
-The screenshot wording is paired with a section in `sandboxes/data-apps/template/skill.md` ("Attached images") that
+The screenshot wording is paired with `sandboxes/data-apps/template/references/attached-images.md` (pointed to by the "Attached images" section of the core skill) that
 documents the filename convention so Claude doesn't try to reproduce its own screenshot pixel-for-pixel. Both lines
 are added by `writeCatalogAndPrompt` in `AppGenerateService.ts` — if you change the prefix string or the filename
 convention, update the skill at the same time.
@@ -853,7 +944,7 @@ Admins can test a connection from the app's connections panel before relying on 
 
 From a successful test, an admin can **Save as sample** (`POST .../external-connections/{connectionUuid}/sample` → `ExternalConnectionService.saveSample`). The sample is **sanitized and truncated** (capped to ~16 KB / 50 rows, with known auth keys redacted) and persisted to `external_connections.last_test_sample`; it never contains secret material (`saveSample` never decrypts the connection's credential).
 
-During a generation, for every linked connection that has a saved sample, the pipeline (`AppGenerateService.writeCatalogAndPrompt` → `writeExternalConnectionSamples`) writes `/tmp/external-data/{alias}.json` into the sandbox and prepends a one-line reference to `/tmp/prompt.txt`, mirroring how chart-reference and image files are surfaced. This grounds Claude in the API's response shape (field names, nesting, formats) so its fetch/render code matches reality. The sample is for code generation only — at runtime the app fetches live data through the proxy, never from these files. The skill (`sandboxes/data-apps/template/skill.md`, "Linked external connections" section) documents the convention; keep the prompt-prepend wording and that section in sync.
+During a generation, for every linked connection that has a saved sample, the pipeline (`AppGenerateService.writeCatalogAndPrompt` → `writeExternalConnectionSamples`) writes `/tmp/external-data/{alias}.json` into the sandbox and prepends a one-line reference to `/tmp/prompt.txt`, mirroring how chart-reference and image files are surfaced. This grounds Claude in the API's response shape (field names, nesting, formats) so its fetch/render code matches reality. The sample is for code generation only — at runtime the app fetches live data through the proxy, never from these files. The skill reference (`sandboxes/data-apps/template/references/external-apis.md`, pointed to by the core skill's "Linked external connections" section) documents the convention; keep the prompt-prepend wording and that file in sync.
 
 The same `/tmp/external-data/{alias}.json` doc carries the connection's **instructions** (when the admin set any) as a top-level `instructions` string field, alongside the auto-generated `signature`/`origin`/`rules`/`samples`. The field is omitted entirely when empty, so existing connections with no instructions are unchanged. The prompt-prepend block tells Claude to read and follow the `instructions` field when present.
 

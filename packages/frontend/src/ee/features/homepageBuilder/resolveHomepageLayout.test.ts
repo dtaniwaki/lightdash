@@ -38,14 +38,7 @@ const makeBlock = (
                 },
             };
         case 'announcements':
-            return {
-                id,
-                type,
-                config: {
-                    title: 't',
-                    items: empty ? [] : [{ text: 'x', date: 'd', author: 'a' }],
-                },
-            };
+            return { id, type, config: { title: 't' } };
         case 'quick-actions':
             return {
                 id,
@@ -89,6 +82,32 @@ const collectionWithItems = (id: string, count: number): HomepageBlock => ({
     },
 });
 
+const resourcesWithItems = (id: string, count: number): HomepageBlock => ({
+    id,
+    type: 'resources',
+    config: {
+        title: 't',
+        items: Array.from({ length: count }, (_, i) => ({
+            title: `r${i}`,
+            url: `https://x${i}.example`,
+            kind: 'link' as const,
+        })),
+    },
+});
+
+const metricsWithCount = (id: string, count: number): HomepageBlock => ({
+    id,
+    type: 'metrics',
+    config: {
+        title: 't',
+        items: Array.from({ length: count }, (_, i) => ({
+            tableName: 'orders',
+            metricName: `m${i}`,
+            label: `M${i}`,
+        })),
+    },
+});
+
 const makeConfig = (rows: HomepageBlock[][]): HomepageConfig => ({
     version: 1,
     rows: rows.map((blocks, i) => ({ id: `row-${i}`, blocks })),
@@ -118,16 +137,16 @@ describe('resolveHomepageLayout', () => {
         const config = makeConfig([[block('a', 'markdown')]]);
         const { hero, rows } = resolveHomepageLayout(config);
         expect(hero).toBeNull();
-        expect(rows[0].widthTier).toBe('reading');
+        expect(rows[0].widthTier).toBe('full');
     });
 
     it('gives single-block rows their block width tier', () => {
         const config = makeConfig([
-            [block('a', 'markdown')],
+            [block('a', 'markdown')], // full: a lone text banner spans the page
             [block('b', 'collection')],
         ]);
         const { rows } = resolveHomepageLayout(config);
-        expect(rows[0].widthTier).toBe('reading');
+        expect(rows[0].widthTier).toBe('full');
         expect(rows[1].widthTier).toBe('full');
     });
 
@@ -163,7 +182,7 @@ describe('resolveHomepageLayout', () => {
     describe('config-empty blocks are invisible to the layout', () => {
         it('an empty leading block does not demote the hero', () => {
             const config = makeConfig([
-                [emptyBlock('ann', 'announcements')],
+                [emptyBlock('res', 'resources')],
                 [block('a', 'ask-ai-hero')],
                 [block('c', 'collection')],
             ]);
@@ -309,6 +328,54 @@ describe('resolveHomepageLayout', () => {
         });
     });
 
+    describe('build surface', () => {
+        it('keeps config-empty blocks and rows 1:1 with the config', () => {
+            const config = makeConfig([
+                [emptyBlock('ann', 'announcements')],
+                [emptyBlock('r', 'resources'), block('f', 'favorites')],
+                [block('c', 'collection')],
+            ]);
+            const { rows } = resolveHomepageLayout(config, {
+                surface: 'build',
+            });
+            expect(rows.map((r) => r.id)).toEqual(['row-0', 'row-1', 'row-2']);
+            expect(rows[1].columns.map((c) => c.block.id)).toEqual(['r', 'f']);
+        });
+
+        it('never hoists a hero — the ask-ai row stays in flow at composer width', () => {
+            const config = makeConfig([
+                [block('a', 'ask-ai-hero')],
+                [block('c', 'collection')],
+            ]);
+            const { hero, rows } = resolveHomepageLayout(config, {
+                surface: 'build',
+            });
+            expect(hero).toBeNull();
+            expect(rows.map((r) => r.id)).toEqual(['row-0', 'row-1']);
+            expect(rows[0].widthTier).toBe('composer');
+        });
+
+        it('applies the same fit and width math as view for visible content', () => {
+            const config = makeConfig([
+                [block('m', 'metrics'), block('f', 'favorites')],
+                [block('c', 'collection')],
+            ]);
+            const view = resolveHomepageLayout(config);
+            const build = resolveHomepageLayout(config, {
+                surface: 'build',
+            });
+            expect(build.rows.map((r) => r.fit)).toEqual(
+                view.rows.map((r) => r.fit),
+            );
+            expect(build.rows.map((r) => r.widthTier)).toEqual(
+                view.rows.map((r) => r.widthTier),
+            );
+            expect(build.rows[0].columns.map((c) => c.hugUnits)).toEqual(
+                view.rows[0].columns.map((c) => c.hugUnits),
+            );
+        });
+    });
+
     describe('hug fit', () => {
         it('multi-column rows hug', () => {
             const config = makeConfig([
@@ -360,15 +427,15 @@ describe('resolveHomepageLayout', () => {
             ]);
         });
 
-        it('never widens focal rows (reading / composer)', () => {
+        it('never widens the composer row', () => {
             const config = makeConfig([
-                [block('t', 'markdown')], // reading
+                [block('t', 'markdown')], // full: text banners span the page
                 [block('c', 'collection')], // full
                 [block('a', 'ask-ai-hero')], // composer (mid-page)
             ]);
             const { rows } = resolveHomepageLayout(config);
             expect(rows.map((r) => r.widthTier)).toEqual([
-                'reading',
+                'full',
                 'full',
                 'composer',
             ]);
@@ -384,7 +451,7 @@ describe('resolveHomepageLayout', () => {
             const { hero, rows } = resolveHomepageLayout(config);
             expect(hero).toBeNull();
             expect(rows.map((r) => r.widthTier)).toEqual([
-                'reading',
+                'full',
                 'full',
                 'composer',
                 'full', // was content — joins the wide axis
@@ -396,5 +463,358 @@ describe('resolveHomepageLayout', () => {
                 'body',
             ]);
         });
+    });
+});
+
+describe('page grid — item spans', () => {
+    it("gives a full-width row the block type's full span", () => {
+        const { rows } = resolveHomepageLayout(
+            makeConfig([[collectionWithItems('c', 6)]]),
+        );
+        expect(rows[0].widthTier).toBe('full');
+        expect(rows[0].columns[0].itemSpan).toBe(4);
+    });
+
+    it('uses the content span when the row stays at content width', () => {
+        // resources alone, no full row on the page, so no width smoothing
+        const { rows } = resolveHomepageLayout(
+            makeConfig([[resourcesWithItems('r', 3)]]),
+        );
+        expect(rows[0].widthTier).toBe('content');
+        expect(rows[0].columns[0].itemSpan).toBe(4);
+    });
+
+    it("follows the smoothed tier, not the block's declared tier", () => {
+        // metrics forces the page wide, so the resources row is promoted
+        // content -> full and must take its *full* span with it
+        const { rows } = resolveHomepageLayout(
+            makeConfig([
+                [metricsWithCount('m', 4)],
+                [resourcesWithItems('r', 3)],
+            ]),
+        );
+        expect(rows[1].widthTier).toBe('full');
+        expect(rows[1].columns[0].itemSpan).toBe(4);
+    });
+
+    it('narrows the span when a block shares a row', () => {
+        const { rows } = resolveHomepageLayout(
+            makeConfig([
+                [metricsWithCount('m', 4), resourcesWithItems('r', 3)],
+            ]),
+        );
+        const [metrics, resources] = rows[0].columns;
+        expect(metrics.itemSpan).toBe(6);
+        // content cards land at the same ~281px width as metrics tiles
+        expect(resources.itemSpan).toBe(6);
+    });
+
+    it('gives list and prose blocks no span', () => {
+        const { rows } = resolveHomepageLayout(
+            makeConfig([[block('f', 'favorites')], [block('t', 'markdown')]]),
+        );
+        expect(rows[0].columns[0].itemSpan).toBeNull();
+        expect(rows[1].columns[0].itemSpan).toBeNull();
+    });
+
+    it('keeps metrics denser than content cards at the same width', () => {
+        const { rows } = resolveHomepageLayout(
+            makeConfig([
+                [metricsWithCount('m', 4)],
+                [collectionWithItems('c', 6)],
+            ]),
+        );
+        // 3 columns per tile => 4-up; 4 columns per card => 3-up
+        expect(rows[0].columns[0].itemSpan).toBe(3);
+        expect(rows[1].columns[0].itemSpan).toBe(4);
+    });
+});
+
+// The builder canvas and the published page must agree on card geometry, or
+// the WYSIWYG promise breaks: an admin arranges cards 3-up and viewers get
+// something else. These assert the two surfaces resolve identical spans.
+describe('page grid — view/build parity', () => {
+    const spansOf = (layout: ReturnType<typeof resolveHomepageLayout>) =>
+        layout.rows.map((row) => row.columns.map((c) => c.itemSpan));
+
+    it('resolves the same item spans on both surfaces', () => {
+        const config = makeConfig([
+            [collectionWithItems('c', 6)],
+            [block('m', 'metrics'), block('r', 'resources')],
+            [block('t', 'markdown')],
+        ]);
+        const view = resolveHomepageLayout(config);
+        const build = resolveHomepageLayout(config, { surface: 'build' });
+        expect(spansOf(build)).toEqual(spansOf(view));
+    });
+
+    it('still spans config-empty blocks on the build surface', () => {
+        // build keeps empty blocks editable; they must be laid out on the same
+        // grid as a populated one, not fall back to full width
+        const config = makeConfig([
+            [emptyBlock('r', 'resources'), metricsWithCount('m', 2)],
+        ]);
+        const { rows } = resolveHomepageLayout(config, { surface: 'build' });
+        expect(rows[0].columns.map((c) => c.itemSpan)).toEqual([6, 6]);
+    });
+
+    it('spans a build-surface hero row like any other row', () => {
+        // build never hoists the hero, so the ask-ai row stays in flow and the
+        // rows after it must keep the spans the view surface gives them
+        const config = makeConfig([
+            [block('a', 'ask-ai-hero')],
+            [collectionWithItems('c', 6)],
+        ]);
+        const build = resolveHomepageLayout(config, { surface: 'build' });
+        const view = resolveHomepageLayout(config);
+        expect(build.rows[1].columns[0].itemSpan).toBe(
+            view.rows[0].columns[0].itemSpan,
+        );
+    });
+});
+
+// A block with fewer items than its row holds should fill the row rather than
+// leave trailing empty tracks — a lone KPI next to a full collection looked
+// like a sliver with half its column blank.
+describe('page grid — sparse blocks stretch', () => {
+    it.each([
+        [1, 12],
+        [2, 6],
+        [3, 4],
+        [4, 3],
+    ])(
+        'stretches %i metrics to a span of %i at full width',
+        (count, expected) => {
+            const { rows } = resolveHomepageLayout(
+                makeConfig([[metricsWithCount('m', count)]]),
+            );
+            expect(rows[0].columns[0].itemSpan).toBe(expected);
+        },
+    );
+
+    it('stretches a lone metric to fill its column in a shared row', () => {
+        const { rows } = resolveHomepageLayout(
+            makeConfig([
+                [metricsWithCount('m', 1), collectionWithItems('c', 3)],
+            ]),
+        );
+        const [metrics, collection] = rows[0].columns;
+        expect(metrics.itemSpan).toBe(12);
+        // the collection fills its own row at the shared-row span, so it keeps it
+        expect(collection.itemSpan).toBe(6);
+    });
+
+    it('never narrows a block that already fills its row', () => {
+        const { rows } = resolveHomepageLayout(
+            makeConfig([[collectionWithItems('c', 7)]]),
+        );
+        expect(rows[0].columns[0].itemSpan).toBe(4);
+    });
+});
+
+describe('build surface — uniform editing width', () => {
+    it('renders every build row at full width so block cards align', () => {
+        const config = makeConfig([
+            [block('t', 'markdown')],
+            [metricsWithCount('m', 4)],
+            [resourcesWithItems('r', 3)],
+        ]);
+        const { rows } = resolveHomepageLayout(config, { surface: 'build' });
+        expect(rows.map((r) => r.widthTier)).toEqual(['full', 'full', 'full']);
+    });
+
+    it('leaves the composer at its own width — that is its design', () => {
+        const { rows } = resolveHomepageLayout(
+            makeConfig([[block('a', 'ask-ai-hero')], [block('t', 'markdown')]]),
+            { surface: 'build' },
+        );
+        expect(rows[0].widthTier).toBe('composer');
+        expect(rows[1].widthTier).toBe('full');
+    });
+
+    it('keeps the published widths on the view surface', () => {
+        const config = makeConfig([
+            [block('t', 'markdown')],
+            [metricsWithCount('m', 4)],
+        ]);
+        const { rows } = resolveHomepageLayout(config);
+        expect(rows[0].widthTier).toBe('full');
+    });
+
+    it('does not change any card span — only chrome width', () => {
+        const config = makeConfig([
+            [resourcesWithItems('r', 3)],
+            [collectionWithItems('c', 6)],
+            [metricsWithCount('m', 4)],
+        ]);
+        const spans = (surface: 'view' | 'build') =>
+            resolveHomepageLayout(config, { surface }).rows.map(
+                (r) => r.columns[0].itemSpan,
+            );
+        expect(spans('build')).toEqual(spans('view'));
+    });
+});
+
+describe('row alignment — narrow rows meet the page edge', () => {
+    it('left-aligns a narrower row when a wider row shares the page', () => {
+        // resources (content) stays narrower than full only when no full row
+        // exists to smooth it — pair it with the wider metrics row and it is
+        // promoted, so use a content row against a full one via build config:
+        // a lone resources row (content) under nothing wider stays centred,
+        // while against a full metrics row smoothing widens it. The left-edge
+        // rule now exercises through the composer exemption test instead.
+        const { rows } = resolveHomepageLayout(
+            makeConfig([[block('t', 'markdown')], [metricsWithCount('m', 4)]]),
+        );
+        expect(rows.map((r) => r.align)).toEqual(['center', 'center']);
+    });
+
+    it('leaves a uniform-width page centred — nothing to align to', () => {
+        const { rows } = resolveHomepageLayout(
+            makeConfig([[block('t', 'markdown')], [block('u', 'markdown')]]),
+        );
+        expect(rows.map((r) => r.align)).toEqual(['center', 'center']);
+    });
+
+    it('keeps the ask-ai composer centred on the build surface', () => {
+        // The published page pulls a leading hero into its own centred hero
+        // section; the build surface keeps it in flow, where it must not get
+        // demoted to the left edge like other narrow rows.
+        const { rows } = resolveHomepageLayout(
+            makeConfig([
+                [block('h', 'ask-ai-hero')],
+                [metricsWithCount('m', 4)],
+            ]),
+            { surface: 'build' },
+        );
+        expect(rows[0].widthTier).toBe('composer');
+        expect(rows[0].align).toBe('center');
+    });
+
+    it('keeps a mid-page ask-ai composer centred on the view surface', () => {
+        const { rows } = resolveHomepageLayout(
+            makeConfig([
+                [metricsWithCount('m', 4)],
+                [block('h', 'ask-ai-hero')],
+            ]),
+        );
+        expect(rows[1].align).toBe('center');
+    });
+
+    it('aligns by resolved tier, so a smoothed row counts as wide', () => {
+        // resources is promoted content -> full by smoothing, so it is not
+        // "narrower than the widest" and must stay centred
+        const { rows } = resolveHomepageLayout(
+            makeConfig([
+                [metricsWithCount('m', 4)],
+                [resourcesWithItems('r', 3)],
+            ]),
+        );
+        expect(rows.map((r) => r.align)).toEqual(['center', 'center']);
+    });
+});
+
+describe('row fit — hug is only for card grids', () => {
+    it('fills a multi-column row of list blocks instead of hugging', () => {
+        const { rows } = resolveHomepageLayout(
+            makeConfig([[block('f', 'favorites'), block('r', 'recent')]]),
+        );
+        expect(rows[0].fit).toBe('fill');
+    });
+
+    it('still hugs when a card-grid block shares the row', () => {
+        const { rows } = resolveHomepageLayout(
+            makeConfig([[metricsWithCount('m', 2), block('r', 'recent')]]),
+        );
+        expect(rows[0].fit).toBe('hug');
+    });
+});
+
+describe('page grid — exact-fit densening', () => {
+    it('puts 4 resources on one row instead of stranding an orphan', () => {
+        const { rows } = resolveHomepageLayout(
+            makeConfig([[resourcesWithItems('r', 4)]]),
+        );
+        expect(rows[0].columns[0].itemSpan).toBe(3);
+    });
+
+    it('keeps 5 items at the declared span — 3+2, no exact fit', () => {
+        const { rows } = resolveHomepageLayout(
+            makeConfig([[resourcesWithItems('r', 5)]]),
+        );
+        expect(rows[0].columns[0].itemSpan).toBe(4);
+    });
+
+    it('keeps 7 items at the declared span — no exact fit one step denser', () => {
+        const { rows } = resolveHomepageLayout(
+            makeConfig([[collectionWithItems('c', 7)]]),
+        );
+        expect(rows[0].columns[0].itemSpan).toBe(4);
+    });
+
+    it('never densifies inside a shared column', () => {
+        const { rows } = resolveHomepageLayout(
+            makeConfig([
+                [resourcesWithItems('r', 3), collectionWithItems('c', 3)],
+            ]),
+        );
+        // 3 items 2-up in a half column would orphan, but 3-up there is too
+        // narrow — the orphan stretches instead
+        expect(rows[0].columns[0].itemSpan).toBe(6);
+    });
+});
+
+// Config is persisted data: a newer builder can store shapes this bundle has
+// never seen (a rolling deploy serves old bundles against new configs). The
+// resolver must degrade, never throw — this reproduces the crash a
+// feed-driven announcements config ({ title } with no items) caused on a
+// bundle that expected items.
+describe('tolerates configs from other code versions', () => {
+    it('renders a config whose block configs miss expected fields', () => {
+        const foreign = JSON.parse(
+            JSON.stringify({
+                version: 1,
+                rows: [
+                    {
+                        id: 'r0',
+                        blocks: [
+                            {
+                                id: 'a',
+                                type: 'announcements',
+                                config: { title: 'News' },
+                            },
+                        ],
+                    },
+                    {
+                        id: 'r1',
+                        blocks: [
+                            {
+                                id: 'c',
+                                type: 'collection',
+                                config: { title: 'T' },
+                            },
+                        ],
+                    },
+                    {
+                        id: 'r2',
+                        blocks: [
+                            { id: 'q', type: 'quick-actions', config: {} },
+                        ],
+                    },
+                    {
+                        id: 'r3',
+                        blocks: [{ id: 'm', type: 'markdown', config: {} }],
+                    },
+                ],
+            }),
+        ) as HomepageConfig;
+        expect(() => resolveHomepageLayout(foreign)).not.toThrow();
+        const { rows } = resolveHomepageLayout(foreign);
+        // field-less config-driven blocks read as empty and drop out instead
+        // of crashing; announcements is feed-driven so its row survives
+        expect(rows).toHaveLength(1);
+        expect(rows[0].columns.map((column) => column.block.type)).toEqual([
+            'announcements',
+        ]);
     });
 });
