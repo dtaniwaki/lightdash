@@ -22,6 +22,10 @@ import {
 } from '../../types/savedCharts';
 import { TimeFrames } from '../../types/timeFrames';
 import { formatDateWithPattern, formatItemValue } from '../../utils/formatting';
+import {
+    getLabelForValue,
+    type LabelValueMap,
+} from '../../utils/labelValueMap';
 import { sanitizeHtml } from '../../utils/sanitizeHtml';
 import {
     StackType,
@@ -313,6 +317,7 @@ const getHeader = (
     xFieldId?: string,
     timezone?: string,
     displayTimezone?: string,
+    labelValueMap?: LabelValueMap,
 ): string => {
     const firstParam = params[0];
 
@@ -320,6 +325,17 @@ const getHeader = (
     // undefined on some stack100 tooltip fires, so fall back to value[0] and
     // then to the dataset row.
     const rawAxisValue = firstParam?.axisValue;
+
+    if (xFieldId) {
+        const headerLabel = getLabelForValue(
+            labelValueMap,
+            xFieldId,
+            rawAxisValue,
+        );
+        if (headerLabel !== undefined) {
+            return headerLabel;
+        }
+    }
     if (timezone && itemsMap && xFieldId) {
         const formatViaTz = (v: unknown) =>
             getFormattedValue(
@@ -927,6 +943,7 @@ export const buildCartesianTooltipFormatter =
         rows,
         timezone,
         displayTimezone,
+        labelValueMap,
     }: {
         itemsMap?: ItemsMap;
         stackValue: string | boolean | undefined;
@@ -943,6 +960,7 @@ export const buildCartesianTooltipFormatter =
         rows?: (ResultRow | Record<string, unknown>)[];
         timezone?: string;
         displayTimezone?: string;
+        labelValueMap?: LabelValueMap;
     }): TooltipComponentFormatterCallback<
         TooltipFormatterParams | TooltipFormatterParams[]
     > =>
@@ -980,6 +998,7 @@ export const buildCartesianTooltipFormatter =
             xFieldId,
             timezone,
             displayTimezone,
+            labelValueMap,
         );
 
         const sortedParams = sortTooltipParams(
