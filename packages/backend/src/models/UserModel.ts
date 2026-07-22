@@ -3,6 +3,7 @@ import {
     ActivateUser,
     AlreadyExistsError,
     applyServiceAccountAbilities,
+    AuthorizationError,
     buildAbilityFromScopes,
     collapseAbilityRules,
     CommercialFeatureFlags,
@@ -1135,6 +1136,17 @@ export class UserModel {
         createUser: CreateLocalUserArgs | OpenIdUser,
         isActive: boolean = true,
     ): Promise<LightdashUser> {
+        const email = isOpenIdUser(createUser)
+            ? createUser.openId.email
+            : createUser.email;
+
+        const existingUser = await this.findUserByEmail(email);
+        if (existingUser?.isPending) {
+            throw new AuthorizationError(
+                `An invitation is pending for ${email}. Please use the invite link sent to your email to sign up.`,
+            );
+        }
+
         const user = await this.database.transaction(async (trx) => {
             if (
                 !isOpenIdUser(createUser) &&
@@ -1145,9 +1157,6 @@ export class UserModel {
                 throw new ParameterError("Password doesn't meet requirements");
             }
 
-            const email = isOpenIdUser(createUser)
-                ? createUser.openId.email
-                : createUser.email;
             const duplicatedEmails = await trx(EmailTableName).where(
                 'email',
                 email,
