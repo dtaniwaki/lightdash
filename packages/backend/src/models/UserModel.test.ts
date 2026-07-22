@@ -219,6 +219,7 @@ describe('UserModel', () => {
             ),
         };
         vi.spyOn(model, 'getUserDetailsByUuid').mockResolvedValue(createdUser);
+        vi.spyOn(model, 'findUserByEmail').mockResolvedValue(undefined);
 
         await model.createUser({
             firstName: '',
